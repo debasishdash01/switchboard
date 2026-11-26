@@ -89,6 +89,7 @@ class Model {
     this.rooms = [];
     this.onChange = new vscode.EventEmitter();
     this.onAttention = new vscode.EventEmitter(); // fires { session, state } when a session starts needing the user
+    this.onWatchEnd = new vscode.EventEmitter(); // fires { session, state } when a watched session stops working
     this.prev = null;
   }
   load() {
@@ -107,6 +108,8 @@ class Model {
       for (const s of sessions) {
         const before = this.prev.get(s.id);
         if ((s.view === 'blocked' || s.view === 'done') && before !== s.view) this.onAttention.fire({ session: s, state: s.view });
+        // A watched session that finished, was interrupted or closed. A dialog is not the end of its work.
+        if (s.watch && before && before !== s.view && ['done', 'idle', 'closed'].includes(s.view)) this.onWatchEnd.fire({ session: s, state: s.view });
       }
     }
     this.prev = next;
@@ -115,7 +118,7 @@ class Model {
     // Redraw only when something visible changed (ages are shown to the minute).
     const sig = JSON.stringify([
       Math.floor(Date.now() / 60000),
-      sessions.map((s) => [s.id, s.view, s.attention, store.displayName(s), s.bg, s.muteAll, s.statusSince, s.lastPrompt]),
+      sessions.map((s) => [s.id, s.view, s.attention, store.displayName(s), s.bg, s.muteAll, s.watch, s.statusSince, s.lastPrompt]),
       rooms.map((r) => [r.id, r.name, r.members, store.readNotes(r.id, { limit: 1 }).map((n) => n.id), store.getPin(r.id).length]),
     ]);
     if (sig === this.sig) return false;
@@ -150,6 +153,7 @@ function sessionItem(model, s, contextValue = 'session') {
   if (s.bg) bits.push(`${s.bg} background`);
   if (s.entrypoint && s.entrypoint !== 'claude-vscode') bits.push('terminal');
   if (s.muteAll) bits.push('muted');
+  if (s.watch) bits.push('watching');
   bits.push(ago(s.statusSince || s.updatedAt));
   item.description = bits.join(' · ');
   item.iconPath = new vscode.ThemeIcon(st.icon, st.color ? new vscode.ThemeColor(st.color) : undefined);
@@ -368,6 +372,8 @@ function activate(context) {
   const pending = new Map();
   context.subscriptions.push(
     model.onAttention.event(({ session, state }) => {
+      // A watched session gets its own notice when it finishes (below), whatever the setting says.
+      if (state === 'done' && session.watch) return;
       const mode = cfg().get('notify');
       if (mode === 'off' || (mode === 'blocked' && state !== 'blocked')) return;
       clearTimeout(pending.get(session.id));
@@ -392,6 +398,25 @@ function activate(context) {
           if (pick === 'Open') openSession(session.id);
         }, 1000)
       );
+    })
+  );
+
+  // ── watched sessions: one notice when the work ends, even with notifications off, then the watch ends ──
+  context.subscriptions.push(
+    model.onWatchEnd.event(({ session, state }) => {
+      setTimeout(async () => {
+        const now = model.get(session.id);
+        if (!now || !now.watch || store.viewState(now) !== state) return;
+        store.upsertSession(session.id, { watch: false });
+        schedule();
+        const active = activeClaudeSession();
+        if (active && active.id === session.id) return; // it is in front of you
+        const name = store.displayName(now);
+        if (state === 'closed') return vscode.window.showInformationMessage(`"${name}" closed.`);
+        const msg = state === 'done' ? `"${name}" finished.` : `"${name}" stopped (interrupted, or nothing left to do).`;
+        const pick = await vscode.window.showInformationMessage(msg, 'Open');
+        if (pick === 'Open') openSession(session.id);
+      }, 1000);
     })
   );
 
@@ -585,6 +610,13 @@ function activate(context) {
       if (!s) return;
       store.upsertSession(s.id, { muteAll: !s.muteAll });
       vscode.window.setStatusBarMessage(`"${store.displayName(s)}" ${s.muteAll ? 'receives' : 'no longer receives'} Everyone-room notes`, 4000);
+    },
+    toggleWatch: (item) => {
+      const s = item && store.getSession(item.sessionId);
+      if (!s) return;
+      store.upsertSession(s.id, { watch: !s.watch });
+      schedule();
+      vscode.window.setStatusBarMessage(s.watch ? `Stopped watching "${store.displayName(s)}"` : `You will be told when "${store.displayName(s)}" finishes`, 4000);
     },
     peekSession: async (item) => {
       const s = item && store.getSession(item.sessionId);

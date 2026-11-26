@@ -102,7 +102,7 @@ Claude session ──hook──▶ ~/.switchboard/ (plain files) ◀── VS Co
 - "Seen" is detected by matching the focused tab's title to the session title. Two open sessions with the same title are marked seen only when opened from the sidebar.
 - Links attach to sessions. A brand-new session on the same topic starts unlinked.
 - A prompt that another tool's hook stops is recognised from the notice Claude Code writes to the session's transcript. That format is not a documented interface; if it changes, such a session shows as Working until its next prompt finishes.
-- A turn you interrupt with Esc sends no hook event. The session stays on Working (or on Needs you, if a dialog was open) until its next prompt.
+- A turn you interrupt with Esc sends no hook event. Switchboard reads the marker Claude writes to the transcript instead, and shows the session as Idle. That marker is not a documented interface; `doctor` reports whether it is still seen.
 - Claude Code sends no event when you grant a permission. The session stays under Needs you until that batch of tool calls ends.
 - A background task that never ends, such as a dev server, keeps its session on Working.
 
@@ -115,7 +115,7 @@ node test/e2e-config.js /tmp/sb    # config to try real sessions without install
 
 - `core/store.js`: the file store. `core/hook.js`: the Claude Code hook. `core/mcp.js`: agent tools. `core/cli.js`: command line.
 - `vscode/`: the extension (plain JavaScript, no build step). `skill/`: the skill.
-- `docs/`: [product brief](docs/PRODUCT-BRIEF.md), [capability contract](docs/CAPABILITY.md), [research](docs/RESEARCH.md).
+- `docs/`: [product brief](docs/PRODUCT-BRIEF.md), [capability contract](docs/CAPABILITY.md), [research](docs/RESEARCH.md), [backlog](docs/BACKLOG.md).
 
 ## License
 

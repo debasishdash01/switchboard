@@ -52,8 +52,9 @@ const FROM_SUBAGENT = new Set(['SessionStart', 'PermissionRequest', 'PreToolUse'
 // Notification types that mean an MCP server's form is waiting, and those that mean one was just answered.
 const FORM = /^(elicitation_dialog|elicitation_url_dialog)$/;
 const ANSWERED = /^(elicitation_complete|elicitation_response)$/;
-// A turn Claude starts by itself when a background task reports back. Nobody typed it.
-const SELF_STARTED = /^\s*<task-notification\b/;
+// A turn Claude starts by itself: a background task reports back, a subagent hands back its report, or
+// another session's SendMessage wakes this one (both arrive as <agent-message from="...">). Nobody typed it.
+const SELF_STARTED = /^\s*<(task-notification|agent-message)\b/;
 // A tool that began this long after a dialog opened began after the dialog was answered.
 const AFTER_MS = 500;
 
@@ -227,7 +228,12 @@ function handle(input, opts = {}) {
       // dialog appears as usual. It carries no tool call id, so the call is recognised later by its input.
       const tool = String(input.tool_name || '');
       let why;
-      if (tool === 'AskUserQuestion') why = 'Asking you a question';
+      if (tool === 'AskUserQuestion') {
+        // Say what is asked, so the row and the notice tell whether it is worth going now.
+        const qs = input.tool_input && Array.isArray(input.tool_input.questions) ? input.tool_input.questions : [];
+        const q = qs[0] && typeof qs[0].question === 'string' ? store.oneLine(qs[0].question, 100) : '';
+        why = q ? `Asking you: ${q}${qs.length > 1 ? ` (1 of ${qs.length} questions)` : ''}` : 'Asking you a question';
+      }
       else if (tool === 'ExitPlanMode') why = 'Plan ready for your approval';
       else if (event === 'PermissionRequest') why = `Needs your permission: ${tool || 'a tool'}`;
       else break;

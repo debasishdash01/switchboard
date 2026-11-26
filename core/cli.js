@@ -185,6 +185,15 @@ switch (cmd) {
     const sessions = store.listSessions({ includeHeadless: true });
     ok(sessions.length > 0, `${sessions.length} session(s) registered (sessions started before the install appear after a restart)`);
     ok(Number(process.versions.node.split('.')[0]) >= 18, `node ${process.versions.node}`);
+    // The transcript lines Switchboard reads are not a documented interface; a Claude Code update can change them.
+    const projects = path.join(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'), 'projects');
+    const fmt = store.transcriptFormats(projects);
+    if (!fmt.files) out(`warn no transcripts found in ${projects}`);
+    else {
+      out(`${fmt.title ? 'ok  ' : 'warn'} titles found in ${fmt.title} of the ${fmt.files} newest transcripts${fmt.title ? '' : ': names fall back to the first prompt (the title line may have changed)'}`);
+      // These two appear only after an Esc or a refused prompt, so not seeing them is normal.
+      out(`info interrupt markers in ${fmt.interrupt}, refused-prompt notices in ${fmt.refusal} (none is normal if you have not pressed Esc or had a prompt refused lately)`);
+    }
     break;
   }
   default:

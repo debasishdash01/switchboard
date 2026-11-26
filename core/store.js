@@ -336,6 +336,7 @@ function listSessions(opts = {}) {
     if (s.headless && !opts.includeHeadless) continue;
     if (s.status === 'closed' && opts.includeClosed === false) continue;
     applyRefusal(s);
+    applyInterrupt(s);
     // The hook stores the title at the session's start, at each prompt and at each Stop. A session it has
     // not heard from since, or one in its first turn, has none yet although its transcript does.
     if (!s.title && s.transcript && s.status !== 'closed') {
@@ -473,7 +474,7 @@ function recentTurns(file, opts = {}) {
     if (!text) continue;
     if (o.type === 'user') {
       // skip harness-generated user lines
-      if (/^<(system-reminder|task-notification|local-command|command-name)/.test(text)) continue;
+      if (/^<(system-reminder|task-notification|agent-message|local-command|command-name)/.test(text)) continue;
       text = text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '').trim();
       if (!text) continue;
     }
@@ -577,6 +578,98 @@ function applyRefusal(s) {
   s.attention = r.reason ? `A hook stopped your last prompt: ${r.reason}` : 'A hook stopped your last prompt';
   s.statusSince = r.at;
   return s;
+}
+
+// ───────────────────────── turns the user interrupted ─────────────────────────
+
+const INTERRUPTED = /^\[Request interrupted by user( for tool use)?\]/;
+
+/**
+ * Claude's marker that the user stopped a turn (Esc, or a dialog dismissed that way), when it is the newest
+ * line of a turn in the transcript. Returns { at } or null. An unreadable or unfamiliar transcript gives null.
+ */
+function lastInterrupt(file) {
+  return scanTail(file, 'interrupt', () => findInterrupt(file));
+}
+function findInterrupt(file) {
+  const lines = readTail(file, 128 * 1024).split('\n');
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i];
+    if (!line.startsWith('{"') || !/"type":"(user|assistant)"/.test(line)) continue;
+    let o;
+    try {
+      o = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (o.isSidechain || !isTurnLine(o)) continue;
+    if (o.type === 'user' && INTERRUPTED.test(textOf(o.message.content).trim())) return { at: Date.parse(o.timestamp) || 0 };
+    return null; // the newest turn line is something else: the turn went on, or a new one began
+  }
+  return null;
+}
+
+/**
+ * A turn the user stops fires no Stop, so the "working" (or the dialog's "blocked") our hook stored would
+ * stay until the next prompt. The marker Claude writes to the transcript is the only trace. Like
+ * applyRefusal, this corrects the copy in memory and never rewrites the session file. Background work,
+ * which an interrupt does not stop, keeps the session "working".
+ */
+function applyInterrupt(s) {
+  if (!s || (s.status !== 'working' && s.status !== 'blocked') || s.refused || s.bg > 0 || !s.transcript) return s;
+  const r = lastInterrupt(s.transcript);
+  // The marker must come after the newest prompt our hook saw. No slack: typing a new message while a turn
+  // runs interrupts it a moment before the new prompt arrives, and that new turn is working.
+  if (!r || r.at <= (s.promptAt || s.statusSince || 0)) return s;
+  // A prompt resets bg and keeps the count from before in bgBefore (see the hook).
+  if (s.bgBefore > 0) {
+    s.bg = s.bgBefore;
+    return s;
+  }
+  s.status = 'idle';
+  s.interrupted = true;
+  s.blocks = {};
+  s.attention = null;
+  s.statusSince = r.at;
+  return s;
+}
+
+// ───────────────────────── transcript format check ─────────────────────────
+
+/**
+ * Switchboard reads a few transcript lines that are not a documented interface: Claude's title, the notice
+ * of a prompt a hook refused, and the marker of an interrupted turn. Counts how many of the newest
+ * transcripts under `dir` hold each, so `doctor` can warn when a Claude Code update changed their shape.
+ */
+function transcriptFormats(dir, newest = 20) {
+  const files = [];
+  const walk = (d, depth) => {
+    let entries = [];
+    try {
+      entries = fs.readdirSync(d, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      const f = path.join(d, e.name);
+      if (e.isDirectory() && depth < 1) walk(f, depth + 1);
+      else if (e.isFile() && e.name.endsWith('.jsonl')) {
+        try {
+          files.push({ f, m: fs.statSync(f).mtimeMs });
+        } catch {}
+      }
+    }
+  };
+  walk(dir, 0);
+  const picked = files.sort((a, b) => b.m - a.m).slice(0, newest);
+  const out = { files: picked.length, title: 0, refusal: 0, interrupt: 0 };
+  for (const { f } of picked) {
+    const text = readTail(f, 2 * 1024 * 1024);
+    if (/"type":"(ai|custom)-title"/.test(text)) out.title++;
+    if (/"kind":"blocked_by_hook"|UserPromptSubmit operation blocked by hook/.test(text)) out.refusal++;
+    if (/"text":"\[Request interrupted by user/.test(text)) out.interrupt++;
+  }
+  return out;
 }
 
 // ───────────────────────── rooms ─────────────────────────
@@ -893,6 +986,8 @@ module.exports = {
   titleFromTranscript,
   recentTurns,
   applyRefusal,
+  applyInterrupt,
+  transcriptFormats,
   // rooms
   listRooms,
   getRoom,

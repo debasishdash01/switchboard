@@ -201,6 +201,42 @@ test('a session that starts needing you raises a notification, unless it is the 
   assert.strictEqual(ui.messages.length, 0);
 });
 
+test('a watched session tells you once when it finishes, even with notifications off', async () => {
+  const realCfg = vscode.workspace.getConfiguration;
+  vscode.workspace.getConfiguration = () => ({ get: (k) => ({ notify: 'off', showHeadless: false, closedSessionsShown: 12 })[k] });
+  try {
+    ui.activeTab = null;
+    store.upsertSession('wiki', { status: 'working', attention: null, seen: true, statusSince: Date.now() });
+    await ui.commands['switchboard.refresh']();
+    await ui.commands['switchboard.toggleWatch']({ sessionId: 'wiki' });
+    assert.strictEqual(store.getSession('wiki').watch, true);
+    await ui.commands['switchboard.refresh']();
+    const row = ui.views['switchboard.sessions'].provider.getChildren().flatMap((g) => g.children || []).find((i) => i.sessionId === 'wiki');
+    assert.match(row.description, /watching/);
+
+    // a dialog on the way is not the end of the work
+    ui.messages.length = 0;
+    store.upsertSession('wiki', { status: 'blocked', attention: 'Asking you a question', seen: false, statusSince: Date.now() + 1 });
+    await ui.commands['switchboard.refresh']();
+    await sleep(1200);
+    assert.strictEqual(ui.messages.length, 0, 'notifications are off and a dialog does not end a watch');
+    assert.strictEqual(store.getSession('wiki').watch, true);
+
+    store.upsertSession('wiki', { status: 'done', attention: null, seen: false, statusSince: Date.now() + 2 });
+    await ui.commands['switchboard.refresh']();
+    await sleep(1200);
+    assert.deepStrictEqual(ui.messages, [['info', '"AWS wiki" finished.']]);
+    assert.strictEqual(store.getSession('wiki').watch, false, 'the watch ends with its notice');
+
+    // watching can be turned off again
+    await ui.commands['switchboard.toggleWatch']({ sessionId: 'wiki' });
+    await ui.commands['switchboard.toggleWatch']({ sessionId: 'wiki' });
+    assert.strictEqual(store.getSession('wiki').watch, false);
+  } finally {
+    vscode.workspace.getConfiguration = realCfg;
+  }
+});
+
 test('a session whose prompt a hook refused sits under "Needs you" with the hook\'s reason', async () => {
   ui.messages.length = 0;
   const transcript = path.join(HOME, 'refused.jsonl');

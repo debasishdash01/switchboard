@@ -51,7 +51,16 @@ test('session lifecycle: working, blocked, done, seen, closed', () => {
 
   hook('PreToolUse', 'A', { tool_name: 'AskUserQuestion' });
   assert.strictEqual(store.getSession('A').status, 'blocked');
+  assert.strictEqual(store.getSession('A').attention, 'Asking you a question');
   hook('PostToolUse', 'A', { tool_name: 'AskUserQuestion' });
+  // the question itself is shown, so the user can tell whether to go now
+  const questions = [{ question: 'Old regime or new regime\nfor FY26?' }, { question: 'Include HRA?' }];
+  hook('PreToolUse', 'A', { tool_name: 'AskUserQuestion', tool_input: { questions } });
+  assert.strictEqual(store.getSession('A').attention, 'Asking you: Old regime or new regime for FY26? (1 of 2 questions)');
+  hook('PostToolUse', 'A', { tool_name: 'AskUserQuestion', tool_input: { questions } });
+  hook('PreToolUse', 'A', { tool_name: 'AskUserQuestion', tool_input: { questions: 'not a list' } });
+  assert.strictEqual(store.getSession('A').attention, 'Asking you a question');
+  hook('PostToolUse', 'A', { tool_name: 'AskUserQuestion', tool_input: { questions: 'not a list' } });
 
   hook('Stop', 'A', { last_assistant_message: 'Advance tax due is 42,000.' });
   s = store.getSession('A');
@@ -225,6 +234,64 @@ test('a refused prompt does not stop background work that was running', () => {
   fs.appendFileSync(f, said('user', '<task-notification>b1 completed</task-notification>') + said('assistant', [{ type: 'text', text: 'Tests pass.' }]));
   hook('Stop', 'REFBG', { last_assistant_message: 'Tests pass.', transcript_path: f, background_tasks: [{ id: 'b1', type: 'shell', status: 'completed' }] });
   assert.strictEqual(listed('REFBG').status, 'done');
+});
+
+// ── turns the user interrupted (Esc): no Stop fires, only a marker in the transcript ──
+
+test('an interrupted turn is idle, not working for good; a dialog dismissed with Esc is not waiting', () => {
+  const f = path.join(HOME, 'interrupted.jsonl');
+  fs.writeFileSync(f, '');
+  hook('UserPromptSubmit', 'INT', { prompt: 'refactor the parser', transcript_path: f });
+  fs.appendFileSync(f, said('user', 'refactor the parser') + said('assistant', [{ type: 'text', text: 'Reading the parser.' }]));
+  assert.strictEqual(listed('INT').status, 'working');
+  fs.appendFileSync(f, said('user', [{ type: 'text', text: '[Request interrupted by user]' }]));
+  let s = listed('INT');
+  assert.strictEqual(s.status, 'idle');
+  assert.strictEqual(s.interrupted, true);
+  assert.strictEqual(store.viewState(s), 'idle', 'the user stopped it, so there is nothing to look at');
+  assert.strictEqual(store.getSession('INT').status, 'working', 'readers do not rewrite the session file');
+
+  // the next prompt is working again, although the marker is still the newest line for a moment
+  hook('UserPromptSubmit', 'INT', { prompt: 'only the lexer then', transcript_path: f });
+  assert.strictEqual(listed('INT').status, 'working', 'the marker is older than the new prompt');
+
+  // a permission dialog dismissed with Esc
+  fs.appendFileSync(f, said('user', 'only the lexer then') + said('assistant', [{ type: 'tool_use', id: 't1', name: 'Bash', input: {} }]));
+  hook('PermissionRequest', 'INT', { tool_name: 'Bash', transcript_path: f });
+  assert.strictEqual(listed('INT').status, 'blocked');
+  fs.appendFileSync(f, said('user', [{ type: 'tool_result', tool_use_id: 't1', content: 'The user doesn\'t want to proceed with this tool use.' }]) + said('user', [{ type: 'text', text: '[Request interrupted by user for tool use]' }]));
+  s = listed('INT');
+  assert.strictEqual(s.status, 'idle');
+  assert.strictEqual(s.attention, null);
+
+  // a turn that went on after an older marker is still working
+  hook('UserPromptSubmit', 'INT', { prompt: 'go on', transcript_path: f });
+  fs.appendFileSync(f, said('user', 'go on') + said('assistant', [{ type: 'text', text: 'Going on.' }]));
+  assert.strictEqual(listed('INT').status, 'working');
+});
+
+test('an interrupt does not stop background work, so the session stays working', () => {
+  const f = path.join(HOME, 'interrupted-bg.jsonl');
+  fs.writeFileSync(f, '');
+  hook('UserPromptSubmit', 'INTBG', { prompt: 'start the build', transcript_path: f });
+  hook('Stop', 'INTBG', { last_assistant_message: 'Started.', transcript_path: f, background_tasks: [{ id: 'b1', type: 'shell', status: 'running', command: 'make' }] });
+  hook('UserPromptSubmit', 'INTBG', { prompt: 'and the docs', transcript_path: f });
+  fs.appendFileSync(f, said('user', 'and the docs') + said('user', [{ type: 'text', text: '[Request interrupted by user]' }]));
+  // the record was "working" with bg counted at the prompt; a reader leaves background work alone
+  const s = listed('INTBG');
+  assert.strictEqual(s.status, 'working');
+  assert.strictEqual(s.bg, 1);
+  assert.notStrictEqual(s.interrupted, true);
+});
+
+test('doctor: which transcript lines Switchboard reads were seen in the newest transcripts', () => {
+  const dir = path.join(HOME, 'projects-fmt');
+  fs.mkdirSync(path.join(dir, 'p1'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'p1', 'a.jsonl'), tline({ type: 'ai-title', aiTitle: 'Tax' }) + said('user', [{ type: 'text', text: '[Request interrupted by user]' }]));
+  fs.writeFileSync(path.join(dir, 'p1', 'b.jsonl'), refusal('no'));
+  fs.writeFileSync(path.join(dir, 'p1', 'c.txt'), 'not a transcript');
+  assert.deepStrictEqual(store.transcriptFormats(dir), { files: 2, title: 1, refusal: 1, interrupt: 1 });
+  assert.deepStrictEqual(store.transcriptFormats(path.join(HOME, 'missing')), { files: 0, title: 0, refusal: 0, interrupt: 0 });
 });
 
 test('refusals: records from before the fix, the plain-text notice, and transcripts that cannot be read', () => {
@@ -527,6 +594,10 @@ test('names: the title is read when a session starts and at each prompt, and rea
   let s = store.getSession('NAME3');
   assert.strictEqual(s.status, 'working');
   assert.strictEqual(s.firstPrompt, undefined);
+  // nor is a subagent's hand-back or a message another session sent with SendMessage
+  hook('UserPromptSubmit', 'NAME3', { prompt: '<agent-message from="a07a787a85161d6d3">\n[Subagent hand-back] The text below is the final report.' });
+  hook('UserPromptSubmit', 'NAME3', { prompt: '<agent-message from="tax-session">\nLeads from the coordinator.' });
+  assert.strictEqual(store.getSession('NAME3').firstPrompt, undefined);
   hook('UserPromptSubmit', 'NAME3', { prompt: 'what did it find?' });
   s = store.getSession('NAME3');
   assert.strictEqual(store.displayName(s), 'what did it find?');
