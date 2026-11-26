@@ -69,7 +69,9 @@ switch (cmd) {
       const rooms = store.roomsFor(s.id).filter((r) => !r.everyone).map((r) => r.name);
       out(
         `${shown(s).padEnd(8)} ${s.id.slice(0, 8)}  ${store.clip(store.displayName(s), 44).padEnd(44)} ${ago(s.updatedAt).padStart(4)}` +
-          `${rooms.length ? `  [${rooms.join(', ')}]` : ''}${s.attention ? `  ! ${s.attention}` : ''}`
+          `${rooms.length ? `  [${rooms.join(', ')}]` : ''}${s.attention ? `  ! ${s.attention}` : ''}` +
+          `${s.status === 'working' && s.bg ? `  (waiting on ${s.bg} background task${s.bg > 1 ? 's' : ''})` : ''}` +
+          `${s.status !== 'closed' && s.watching ? `  (${s.watching} monitor${s.watching > 1 ? 's' : ''} watching)` : ''}`
       );
     }
     break;

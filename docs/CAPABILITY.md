@@ -42,7 +42,7 @@ Stored status: `idle → working → blocked ⇄ working → done → working �
 | UserPromptSubmit | `working`; deliver unread notes |
 | PermissionRequest, Notification (permission / question), PreToolUse on `AskUserQuestion` or `ExitPlanMode`, StopFailure | `blocked`, with a reason |
 | PostToolUse | `blocked → working` only. Never changes any other status |
-| Stop | `done`; `working` if background tasks are still running |
+| Stop | `done`; `working` if background tasks are still running (finished tasks and monitors do not count; what Claude listed is kept in `stopTasks`) |
 | SessionEnd | `closed` |
 | (reader side) Claude process no longer exists | shown as `closed` |
 

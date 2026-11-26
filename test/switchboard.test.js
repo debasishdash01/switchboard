@@ -69,6 +69,59 @@ test('background tasks keep a stopped session "working"', () => {
   hook('UserPromptSubmit', 'BG', { prompt: 'run the long job' });
   hook('Stop', 'BG', { last_assistant_message: 'started', background_tasks: [{ id: 1 }] });
   assert.strictEqual(store.getSession('BG').status, 'working');
+  hook('Stop', 'BG', { last_assistant_message: 'still going', background_tasks: [{ id: 'b1', type: 'shell', status: 'running', command: 'npm test' }] });
+  const s = store.getSession('BG');
+  assert.strictEqual(s.status, 'working');
+  assert.strictEqual(s.bg, 1);
+  assert.deepStrictEqual(s.stopTasks, [{ id: 'b1', type: 'shell', status: 'running', what: 'npm test', counted: true }]);
+});
+
+test('stopped or finished background tasks do not keep a session "working"', () => {
+  hook('UserPromptSubmit', 'BGDONE', { prompt: 'preview the page, then stop the server' });
+  hook('Stop', 'BGDONE', {
+    last_assistant_message: 'Nothing is running now.',
+    background_tasks: [
+      { id: 'b1', type: 'shell', status: 'killed', command: 'python -m http.server' },
+      { id: 'a1', type: 'subagent', status: 'completed', agent_type: 'web-fetch' },
+      { id: 'b2', type: 'shell', status: 'failed' },
+      null,
+      'junk',
+    ],
+  });
+  let s = store.getSession('BGDONE');
+  assert.strictEqual(s.status, 'done');
+  assert.strictEqual(s.bg, 0);
+  assert.strictEqual(s.stopTasks.length, 3, 'what Claude listed is kept so the status can be explained');
+  assert.ok(s.stopTasks.every((t) => t.counted === false));
+
+  // one finished and one live task: still working, and only the live one is counted
+  hook('UserPromptSubmit', 'BGDONE', { prompt: 'again' });
+  hook('Stop', 'BGDONE', { background_tasks: [{ id: 'b1', status: 'killed' }, { id: 'w1', type: 'workflow', status: 'running', name: 'review' }] });
+  s = store.getSession('BGDONE');
+  assert.strictEqual(s.status, 'working');
+  assert.strictEqual(s.bg, 1);
+});
+
+test('a monitor is a watcher, not work: a session that published an artifact still finishes', () => {
+  // The entry Claude really sends at Stop once a session has published an artifact.
+  const artifactMonitor = { id: 'seq46zppu', type: 'monitor', status: 'running', description: 'live updates for artifact https://claude.ai/artifact/example' };
+  hook('UserPromptSubmit', 'MON', { prompt: 'publish the page' });
+  hook('Stop', 'MON', { last_assistant_message: 'Published.', background_tasks: [artifactMonitor] });
+  let s = store.getSession('MON');
+  assert.strictEqual(s.status, 'done');
+  assert.strictEqual(s.seen, false);
+  assert.strictEqual(s.bg, 0);
+  assert.strictEqual(s.watching, 1);
+  assert.strictEqual(s.stopTasks[0].counted, false);
+  assert.match(s.stopTasks[0].what, /live updates for artifact/);
+
+  // real work next to the monitor still keeps the session working
+  hook('UserPromptSubmit', 'MON', { prompt: 'now run the tests in the background' });
+  hook('Stop', 'MON', { background_tasks: [artifactMonitor, { id: 'b9', type: 'shell', status: 'running', command: 'npm test' }] });
+  s = store.getSession('MON');
+  assert.strictEqual(s.status, 'working');
+  assert.strictEqual(s.bg, 1);
+  assert.strictEqual(s.watching, 1);
 });
 
 test('headless runs are hidden by default; dead processes read as closed', () => {

@@ -16,7 +16,7 @@ It brings the parts of [cmux](https://github.com/manaflow-ai/cmux) that matter f
 |---|---|
 | Needs you | Waiting for a permission click, an answer to a question, or stopped on an error |
 | Finished · not seen yet | The turn ended and you have not looked at it |
-| Working | Busy (including background tasks) |
+| Working | Busy (including background tasks that are still running; a monitor that only watches does not count) |
 | Idle | Finished and seen |
 | Closed | The session's process has ended. Click to reopen it |
 

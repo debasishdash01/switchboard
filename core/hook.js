@@ -20,6 +20,15 @@
 const HARD_LIMIT_MS = 2500;
 const timer = setTimeout(() => process.exit(0), HARD_LIMIT_MS);
 
+// Final statuses of a background task. Anything else (running, pending, no status at all) is still going.
+const FINISHED = /^(completed?|done|finished|succeeded|success|failed|failure|error(ed)?|killed|stopped|cancell?ed|aborted|timed[_ -]?out|timeout|exited|closed)$/i;
+const inFlight = (task) => !FINISHED.test(String((task && task.status) || '').trim());
+// A monitor only watches for something. Claude attaches one to a session that publishes an artifact
+// ("live updates for artifact ..."), and it stays "running" for as long as the session is open.
+const isWatcher = (task) => /monitor/i.test(String((task && task.type) || ''));
+// Work in progress: Claude will come back with a result. A watcher or a finished task is not that.
+const isWork = (task) => inFlight(task) && !isWatcher(task);
+
 function main(raw) {
   const store = require('./store.js');
   let input;
@@ -104,13 +113,25 @@ function main(raw) {
       break;
     }
     case 'Stop': {
-      const bg = Array.isArray(input.background_tasks) ? input.background_tasks.length : 0;
+      const listed = Array.isArray(input.background_tasks) ? input.background_tasks.filter((t) => t && typeof t === 'object') : [];
+      // Only real work counts. Counting every listed task left a session on "working" for good once it
+      // had published an artifact, because the artifact's live-update monitor never ends.
+      const bg = listed.filter(isWork).length;
       const patch = {
         ...base,
         // With background work still running the turn is not really over.
         status: bg ? 'working' : 'done',
         seen: bg ? true : false,
         bg,
+        watching: listed.filter((t) => inFlight(t) && isWatcher(t)).length,
+        // What Claude listed at this Stop, kept until the next Stop so a wrong status can be explained.
+        stopTasks: listed.slice(0, 8).map((t) => ({
+          id: store.oneLine(t.id, 40),
+          type: store.oneLine(t.type, 30),
+          status: store.oneLine(t.status, 30),
+          what: store.oneLine(t.command || t.description || t.name || t.agent_type || '', 80),
+          counted: isWork(t),
+        })),
         attention: null,
         lastReply: store.oneLine(input.last_assistant_message, 400),
       };
