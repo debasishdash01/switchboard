@@ -1,0 +1,131 @@
+{
+  "name": "switchboard",
+  "displayName": "Switchboard",
+  "description": "See every Claude Code session at a glance, jump to the one that needs you, and share context between sessions.",
+  "version": "0.1.0",
+  "publisher": "local",
+  "license": "MIT",
+  "engines": { "vscode": "^1.94.0" },
+  "categories": ["Other"],
+  "main": "./extension.js",
+  "activationEvents": ["onStartupFinished"],
+  "extensionKind": ["ui", "workspace"],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [{ "id": "switchboard", "title": "Switchboard", "icon": "media/icon.svg" }]
+    },
+    "views": {
+      "switchboard": [
+        { "id": "switchboard.sessions", "name": "Sessions" },
+        { "id": "switchboard.rooms", "name": "Rooms (shared context)" }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "switchboard.sessions",
+        "contents": "No Claude sessions yet.\nSessions appear here after their next prompt. Sessions that were already open when Switchboard was installed need a restart of their tab.\n[New Claude session](command:switchboard.newSession)"
+      }
+    ],
+    "commands": [
+      { "command": "switchboard.refresh", "title": "Refresh", "category": "Switchboard", "icon": "$(refresh)" },
+      { "command": "switchboard.newSession", "title": "New Claude Session", "category": "Switchboard", "icon": "$(add)" },
+      { "command": "switchboard.jumpNext", "title": "Jump to Next Session That Needs You", "category": "Switchboard", "icon": "$(bell-dot)" },
+      { "command": "switchboard.quickSwitch", "title": "Switch Session…", "category": "Switchboard" },
+      { "command": "switchboard.markAllSeen", "title": "Mark All as Seen", "category": "Switchboard", "icon": "$(check-all)" },
+      { "command": "switchboard.openSession", "title": "Open Session", "category": "Switchboard" },
+      { "command": "switchboard.linkSessions", "title": "Link Sessions…", "category": "Switchboard", "icon": "$(link)" },
+      { "command": "switchboard.addSessionToRoom", "title": "Add to Room…", "category": "Switchboard" },
+      { "command": "switchboard.shareLastReply", "title": "Share Its Last Reply…", "category": "Switchboard" },
+      { "command": "switchboard.askToShare", "title": "Ask It to Write a Handoff Note…", "category": "Switchboard" },
+      { "command": "switchboard.renameSession", "title": "Rename in Switchboard…", "category": "Switchboard" },
+      { "command": "switchboard.toggleMute", "title": "Mute / Unmute Everyone-Room Notes", "category": "Switchboard" },
+      { "command": "switchboard.peekSession", "title": "Peek at Recent Turns", "category": "Switchboard" },
+      { "command": "switchboard.copySessionId", "title": "Copy Session ID", "category": "Switchboard" },
+      { "command": "switchboard.forgetSession", "title": "Forget Session", "category": "Switchboard" },
+      { "command": "switchboard.newRoom", "title": "New Room…", "category": "Switchboard", "icon": "$(add)" },
+      { "command": "switchboard.shareNote", "title": "Share a Note…", "category": "Switchboard", "icon": "$(comment)" },
+      { "command": "switchboard.broadcast", "title": "Share a Note with All Sessions…", "category": "Switchboard", "icon": "$(broadcast)" },
+      { "command": "switchboard.shareSelection", "title": "Switchboard: Share Selection with Sessions…" },
+      { "command": "switchboard.openNotes", "title": "Open Notes", "category": "Switchboard", "icon": "$(book)" },
+      { "command": "switchboard.editPin", "title": "Edit Pinned Brief", "category": "Switchboard", "icon": "$(pinned)" },
+      { "command": "switchboard.addToRoom", "title": "Add Sessions…", "category": "Switchboard", "icon": "$(person-add)" },
+      { "command": "switchboard.removeFromRoom", "title": "Remove from Room", "category": "Switchboard" },
+      { "command": "switchboard.renameRoom", "title": "Rename Room…", "category": "Switchboard" },
+      { "command": "switchboard.clearNotes", "title": "Clear Notes", "category": "Switchboard" },
+      { "command": "switchboard.deleteRoom", "title": "Delete Room", "category": "Switchboard" }
+    ],
+    "menus": {
+      "view/title": [
+        { "command": "switchboard.jumpNext", "when": "view == switchboard.sessions", "group": "navigation@1" },
+        { "command": "switchboard.linkSessions", "when": "view == switchboard.sessions", "group": "navigation@2" },
+        { "command": "switchboard.newSession", "when": "view == switchboard.sessions", "group": "navigation@3" },
+        { "command": "switchboard.refresh", "when": "view == switchboard.sessions", "group": "navigation@4" },
+        { "command": "switchboard.markAllSeen", "when": "view == switchboard.sessions", "group": "more@1" },
+        { "command": "switchboard.broadcast", "when": "view == switchboard.rooms", "group": "navigation@1" },
+        { "command": "switchboard.newRoom", "when": "view == switchboard.rooms", "group": "navigation@2" }
+      ],
+      "view/item/context": [
+        { "command": "switchboard.linkSessions", "when": "view == switchboard.sessions && viewItem =~ /^session/", "group": "inline@1" },
+        { "command": "switchboard.shareNote", "when": "view == switchboard.sessions && viewItem =~ /^session/", "group": "inline@2" },
+        { "command": "switchboard.openSession", "when": "viewItem =~ /^session/", "group": "1_open@1" },
+        { "command": "switchboard.peekSession", "when": "viewItem =~ /^session/", "group": "1_open@2" },
+        { "command": "switchboard.linkSessions", "when": "viewItem =~ /^session/", "group": "2_share@1" },
+        { "command": "switchboard.addSessionToRoom", "when": "viewItem =~ /^session/", "group": "2_share@2" },
+        { "command": "switchboard.shareNote", "when": "viewItem =~ /^session/", "group": "2_share@3" },
+        { "command": "switchboard.shareLastReply", "when": "viewItem =~ /^session/", "group": "2_share@4" },
+        { "command": "switchboard.askToShare", "when": "viewItem =~ /^session/", "group": "2_share@5" },
+        { "command": "switchboard.renameSession", "when": "viewItem =~ /^session/", "group": "3_manage@1" },
+        { "command": "switchboard.toggleMute", "when": "viewItem =~ /^session/", "group": "3_manage@2" },
+        { "command": "switchboard.copySessionId", "when": "viewItem =~ /^session/", "group": "3_manage@3" },
+        { "command": "switchboard.forgetSession", "when": "viewItem =~ /^session/", "group": "4_danger@1" },
+        { "command": "switchboard.removeFromRoom", "when": "viewItem == member", "group": "4_danger@1" },
+        { "command": "switchboard.shareNote", "when": "view == switchboard.rooms && viewItem =~ /^room/", "group": "inline@1" },
+        { "command": "switchboard.addToRoom", "when": "viewItem == room", "group": "inline@2" },
+        { "command": "switchboard.openNotes", "when": "viewItem =~ /^room/", "group": "inline@3" },
+        { "command": "switchboard.shareNote", "when": "view == switchboard.rooms && viewItem =~ /^room/", "group": "1_share@1" },
+        { "command": "switchboard.openNotes", "when": "viewItem =~ /^room/", "group": "1_share@2" },
+        { "command": "switchboard.editPin", "when": "viewItem =~ /^room/", "group": "1_share@3" },
+        { "command": "switchboard.addToRoom", "when": "viewItem == room", "group": "2_members@1" },
+        { "command": "switchboard.renameRoom", "when": "viewItem == room", "group": "3_manage@1" },
+        { "command": "switchboard.clearNotes", "when": "viewItem =~ /^room/", "group": "4_danger@1" },
+        { "command": "switchboard.deleteRoom", "when": "viewItem == room", "group": "4_danger@2" }
+      ],
+      "editor/context": [{ "command": "switchboard.shareSelection", "when": "editorHasSelection", "group": "9_switchboard" }],
+      "commandPalette": [
+        { "command": "switchboard.openSession", "when": "false" },
+        { "command": "switchboard.removeFromRoom", "when": "false" },
+        { "command": "switchboard.shareSelection", "when": "editorHasSelection" }
+      ]
+    },
+    "keybindings": [
+      { "command": "switchboard.jumpNext", "key": "ctrl+alt+u", "mac": "cmd+alt+u" },
+      { "command": "switchboard.quickSwitch", "key": "ctrl+alt+j", "mac": "cmd+alt+j" }
+    ],
+    "configuration": {
+      "title": "Switchboard",
+      "properties": {
+        "switchboard.notify": {
+          "type": "string",
+          "enum": ["all", "blocked", "off"],
+          "enumDescriptions": [
+            "Notify when a session needs you or finishes.",
+            "Notify only when a session is waiting for you (permission, question, error).",
+            "Never show notifications. The sidebar and status bar still update."
+          ],
+          "default": "all",
+          "description": "When to show a notification for a session that is not the tab you are looking at."
+        },
+        "switchboard.showHeadless": {
+          "type": "boolean",
+          "default": false,
+          "description": "Also list unattended runs (claude -p, SDK and workflow sessions)."
+        },
+        "switchboard.closedSessionsShown": {
+          "type": "number",
+          "default": 12,
+          "description": "How many closed sessions to keep in the Closed group. They can be reopened with a click."
+        }
+      }
+    }
+  }
+}

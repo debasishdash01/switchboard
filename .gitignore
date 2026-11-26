@@ -1,0 +1,8 @@
+# Build output (node install.js --build-only recreates these)
+dist/
+vscode/lib/
+*.vsix
+
+node_modules/
+.DS_Store
+Thumbs.db
