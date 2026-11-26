@@ -45,10 +45,13 @@ Stored status: `idle → working → blocked ⇄ working → done → working �
 | Stop | `done`; `working` if background tasks are still running (finished tasks and monitors do not count; what Claude listed is kept in `stopTasks`) |
 | SessionEnd | `closed` |
 | (reader side) Claude process no longer exists | shown as `closed` |
+| (reader side) stored `working`, and the newest thing in the transcript is Claude's notice that a UserPromptSubmit hook refused the prompt | shown as `blocked` with that hook's reason; stays `working` if background work was running when the prompt came in |
+
+**Refused prompts.** Another tool's UserPromptSubmit hook can refuse a prompt (a policy hook, or a tool that answers its own commands that way). Claude then starts no turn and fires no Stop, and hooks for one event run side by side, so our hook cannot see the verdict. The only trace is the `system` line Claude writes to the transcript (`promptSubmitEnding.ending.kind = "blocked_by_hook"`, text `UserPromptSubmit operation blocked by hook: …`). `store.applyRefusal` reads the transcript's tail for sessions stored as `working`. The notice counts only if it is not older than the newest prompt our hook saw (`promptAt`, set at UserPromptSubmit) and no turn line (assistant output, a tool result, a real user message) follows it. `bgBefore`, also set at UserPromptSubmit, holds the background tasks that were running at that moment. Like the dead-process check this corrects the copy in memory only; the session file keeps `working` until the next prompt or Stop. An unreadable or unfamiliar transcript changes nothing.
 
 Shown state adds one derived value: `done` is shown as **Finished · not seen yet** until the user opens the session from the sidebar or focuses its tab; after that it is shown as **Idle**. "Seen" is stored in its own file (`seen/<id>`) so the sidebar never rewrites a file the hook writes.
 
-Guards (each one is a bug cmux or herdr documented): events with `agent_id` (subagents) are ignored; an `idle_prompt` notification is not "blocked"; a late tool event cannot revive a finished session.
+Guards (each one is a bug cmux or herdr documented): events with `agent_id` (subagents) are ignored; an `idle_prompt` notification is not "blocked"; a late tool event cannot revive a finished session. One more from our own use: a prompt refused by another tool's hook must not leave the session on "working".
 
 ## Interface contract
 

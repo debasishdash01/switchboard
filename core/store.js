@@ -214,8 +214,9 @@ function displayName(s) {
 }
 
 /**
- * Sessions with status reconciled against the process table:
- * a session whose Claude process is gone is "closed" whatever its file says.
+ * Sessions with status reconciled against what can be checked from outside:
+ * a session whose Claude process is gone is "closed" whatever its file says, and
+ * a session whose last prompt a hook refused is not "working" (see applyRefusal).
  */
 function listSessions(opts = {}) {
   ensure();
@@ -238,6 +239,7 @@ function listSessions(opts = {}) {
     }
     if (s.headless && !opts.includeHeadless) continue;
     if (s.status === 'closed' && opts.includeClosed === false) continue;
+    applyRefusal(s);
     out.push(s);
   }
   out.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
@@ -380,6 +382,89 @@ function recentTurns(file, opts = {}) {
   const picked = out.slice(-turns);
   const per = Math.max(400, Math.floor(maxChars / picked.length || 1));
   return picked.map((t) => ({ ...t, text: clip(t.text, per) }));
+}
+
+// ───────────────────────── prompts a hook refused ─────────────────────────
+
+const REFUSED = /^UserPromptSubmit operation blocked by hook:?\s*/;
+const tailScans = new Map(); // transcript path -> { size, mtimeMs, found }
+
+/** A transcript line that shows a turn running. What a local slash command (/model, /help) leaves behind is not one. */
+function isTurnLine(o) {
+  if (o.type === 'assistant') return true;
+  if (o.type !== 'user' || o.isMeta || o.isCompactSummary || !o.message) return false;
+  const c = o.message.content;
+  if (Array.isArray(c) && c.some((b) => b && b.type === 'tool_result')) return true;
+  const text = textOf(c).trim();
+  return !!text && !/^<(local-command|command-name|command-message|command-args)/.test(text);
+}
+
+/**
+ * Claude's notice that a UserPromptSubmit hook refused a prompt, when nothing of a turn follows it in the
+ * transcript. Returns { at, reason } or null. An unreadable or unfamiliar transcript gives null.
+ */
+function lastRefusal(file) {
+  let st;
+  try {
+    st = fs.statSync(file);
+  } catch {
+    return null;
+  }
+  const hit = tailScans.get(file);
+  if (hit && hit.size === st.size && hit.mtimeMs === st.mtimeMs) return hit.found;
+  let found = null;
+  const lines = readTail(file, 128 * 1024).split('\n');
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i];
+    if (!line.startsWith('{"') || !/"type":"(user|assistant|system)"/.test(line)) continue;
+    let o;
+    try {
+      o = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (o.isSidechain) continue;
+    if (o.type === 'system') {
+      const ending = o.promptSubmitEnding && o.promptSubmitEnding.ending;
+      const text = typeof o.content === 'string' ? o.content : '';
+      if (!(ending && ending.kind === 'blocked_by_hook') && !REFUSED.test(text)) continue;
+      const reason = (ending && ending.reason) || text.replace(REFUSED, '');
+      found = { at: Date.parse(o.timestamp) || 0, reason: oneLine(String(reason).split(/\n\s*\nOriginal prompt:/)[0], 160) };
+      break;
+    }
+    if (isTurnLine(o)) break;
+  }
+  if (tailScans.size > 500) tailScans.clear();
+  tailScans.set(file, { size: st.size, mtimeMs: st.mtimeMs, found });
+  return found;
+}
+
+/**
+ * Another tool's UserPromptSubmit hook can refuse a prompt (a policy hook, or a tool that answers its own
+ * commands that way). Claude then starts no turn and fires no Stop, so the "working" our hook stored when
+ * the prompt came in would stay for good. Hooks for one event run side by side and cannot see each other's
+ * verdict; the notice Claude writes to the transcript is the only trace.
+ *
+ * Corrects the copy in memory and returns it, like the dead-process check in listSessions: readers never
+ * rewrite a session file. The session is shown as blocked with the hook's reason, unless background work
+ * was running when the prompt came in, which a refused prompt does not stop.
+ */
+function applyRefusal(s) {
+  if (!s || s.status !== 'working' || !s.transcript) return s;
+  const r = lastRefusal(s.transcript);
+  // The notice must belong to the newest prompt our hook saw. Records written before promptAt existed
+  // fall back to the moment the session went "working".
+  const since = s.promptAt ? s.promptAt - 1000 : (s.statusSince || 0) - 5000;
+  if (!r || r.at < since) return s;
+  if (s.bgBefore > 0) {
+    s.bg = s.bgBefore;
+    return s;
+  }
+  s.status = 'blocked';
+  s.refused = true;
+  s.attention = r.reason ? `A hook stopped your last prompt: ${r.reason}` : 'A hook stopped your last prompt';
+  s.statusSince = r.at;
+  return s;
 }
 
 // ───────────────────────── rooms ─────────────────────────
@@ -693,6 +778,7 @@ module.exports = {
   prunePids,
   titleFromTranscript,
   recentTurns,
+  applyRefusal,
   // rooms
   listRooms,
   getRoom,

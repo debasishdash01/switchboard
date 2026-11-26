@@ -201,6 +201,28 @@ test('a session that starts needing you raises a notification, unless it is the 
   assert.strictEqual(ui.messages.length, 0);
 });
 
+test('a session whose prompt a hook refused sits under "Needs you" with the hook\'s reason', async () => {
+  ui.messages.length = 0;
+  const transcript = path.join(HOME, 'refused.jsonl');
+  const at = Date.now();
+  // What the hook stores when the prompt comes in; no Stop follows a refused prompt.
+  store.upsertSession('pol', { title: 'Policy check', status: 'working', pid: process.pid, entrypoint: 'claude-vscode', transcript, promptAt: at });
+  await ui.commands['switchboard.refresh']();
+  const group = (name) => ui.views['switchboard.sessions'].provider.getChildren().find((g) => g.label === name);
+  assert.ok(group('Working').children.some((c) => c.label === 'Policy check'));
+
+  const notice = { isSidechain: false, type: 'system', subtype: 'informational', timestamp: new Date(at + 40).toISOString(), content: 'UserPromptSubmit operation blocked by hook:\nBaton: 104k tokens in this session.' };
+  fs.writeFileSync(transcript, `${JSON.stringify(notice)}\n`);
+  await ui.commands['switchboard.refresh']();
+  const item = group('Needs you').children.find((c) => c.label === 'Policy check');
+  assert.ok(item, 'listed under Needs you');
+  assert.match(item.description, /A hook stopped your last prompt: Baton: 104k tokens in this session\./);
+  assert.strictEqual(item.iconPath.id, 'bell-dot');
+  assert.ok(!(group('Working') || { children: [] }).children.some((c) => c.label === 'Policy check'));
+  await sleep(1200);
+  assert.ok(ui.messages.some(([kind, msg]) => kind === 'warn' && /Policy check.*needs you: A hook stopped your last prompt/.test(msg)));
+});
+
 test.after(() => {
   ctx.subscriptions.forEach((d) => d && d.dispose && d.dispose());
   fs.rmSync(HOME, { recursive: true, force: true });

@@ -5,6 +5,8 @@
  *
  *   SessionStart       register the session; hand over pinned briefs and unread shared notes
  *   UserPromptSubmit   status -> working; hand over unread shared notes
+ *                      (if another tool's hook refuses the prompt, no turn starts and no Stop follows;
+ *                      readers catch that from the transcript, see store.applyRefusal)
  *   PermissionRequest  a permission dialog is about to show -> "blocked"
  *   Notification       permission / question prompts -> status "blocked" (needs you)
  *   PreToolUse         only for AskUserQuestion / ExitPlanMode -> "blocked"
@@ -19,6 +21,8 @@
  */
 const HARD_LIMIT_MS = 2500;
 const timer = setTimeout(() => process.exit(0), HARD_LIMIT_MS);
+// When Claude started this hook, which is when the event happened. Hooks for one event start together.
+const STARTED = Date.now() - Math.round(process.uptime() * 1000);
 
 // Final statuses of a background task. Anything else (running, pending, no status at all) is still going.
 const FINISHED = /^(completed?|done|finished|succeeded|success|failed|failure|error(ed)?|killed|stopped|cancell?ed|aborted|timed[_ -]?out|timeout|exited|closed)$/i;
@@ -76,9 +80,24 @@ function main(raw) {
       break;
     }
     case 'UserPromptSubmit': {
-      const prev = store.getSession(sid);
+      // What the session was really doing when this prompt arrived: a hook may have refused its last one.
+      const prev = store.applyRefusal(store.getSession(sid));
       const prompt = store.oneLine(input.prompt, 240);
-      const patch = { ...base, status: 'working', seen: true, attention: null, lastPrompt: prompt, bg: 0 };
+      const patch = {
+        ...base,
+        status: 'working',
+        seen: true,
+        attention: null,
+        lastPrompt: prompt,
+        bg: 0,
+        // Another hook may refuse this prompt, and we cannot see that from here. These two let a reader
+        // tell later (store.applyRefusal): which prompt a refusal notice belongs to, and whether
+        // background work was running, which a refused prompt does not stop.
+        promptAt: STARTED,
+        bgBefore: prev && prev.status === 'working' ? prev.bg || 0 : 0,
+      };
+      // The stored status stayed "working" through a refused prompt, so its start would not move by itself.
+      if (prev && prev.refused) patch.statusSince = Date.now();
       if (!prev || !prev.firstPrompt) patch.firstPrompt = prompt;
       store.upsertSession(sid, patch);
       store.recordPid(pid, sid);

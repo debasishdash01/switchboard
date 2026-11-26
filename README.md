@@ -14,7 +14,7 @@ It brings the parts of [cmux](https://github.com/manaflow-ai/cmux) that matter f
 
 | Group | Meaning |
 |---|---|
-| Needs you | Waiting for a permission click, an answer to a question, or stopped on an error |
+| Needs you | Waiting for a permission click, an answer to a question, or stopped on an error. Also when another tool's hook stopped your last prompt, with that hook's reason |
 | Finished · not seen yet | The turn ended and you have not looked at it |
 | Working | Busy (including background tasks that are still running; a monitor that only watches does not count) |
 | Idle | Finished and seen |
@@ -99,11 +99,12 @@ Claude session ──hook──▶ ~/.switchboard/ (plain files) ◀── VS Co
 - A session running in a terminal is listed, but clicking it cannot bring that terminal to the front.
 - "Seen" is detected by matching the focused tab's title to the session title. Two open sessions with the same title are marked seen only when opened from the sidebar.
 - Links attach to sessions. A brand-new session on the same topic starts unlinked.
+- A prompt that another tool's hook stops is recognised from the notice Claude Code writes to the session's transcript. That format is not a documented interface; if it changes, such a session shows as Working until its next prompt finishes.
 
 ## Development
 
 ```
-node --test test/switchboard.test.js test/extension.test.js   # 17 tests
+node --test test/switchboard.test.js test/extension.test.js   # 24 tests
 node test/e2e-config.js /tmp/sb    # config to try real sessions without installing
 ```
 
