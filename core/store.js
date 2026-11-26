@@ -87,28 +87,77 @@ function writeJsonAtomic(file, obj) {
   }
 }
 
-function withLock(name, fn) {
-  ensure();
-  const lock = p(`${name}.lock`);
-  for (let i = 0; ; i++) {
-    try {
-      fs.mkdirSync(lock);
-      break;
-    } catch (e) {
-      if (e.code !== 'EEXIST') throw e;
+// Locks this process holds. A hook that hits its time limit calls process.exit(), which skips `finally`.
+// Kept on `process` so that loading this file again (the sidebar does, when the code changes) adds no
+// second exit handler.
+const HELD = Symbol.for('switchboard.heldLocks');
+if (!process[HELD]) {
+  process[HELD] = new Set();
+  process.on('exit', () => {
+    for (const lock of process[HELD]) {
       try {
-        if (Date.now() - fs.statSync(lock).mtimeMs > 5000) fs.rmdirSync(lock); // stale
+        fs.rmdirSync(lock);
       } catch {}
-      if (i > 150) throw new Error(`switchboard: could not lock ${name}`);
-      sleepSync(20);
+    }
+    process[HELD].clear();
+  });
+}
+const held = process[HELD];
+
+function unlock(lock) {
+  for (let i = 0; i < 4; i++) {
+    try {
+      fs.rmdirSync(lock);
+      return;
+    } catch (e) {
+      if (e.code === 'ENOENT') return;
+      sleepSync(5); // Windows: something has the directory open for a moment
     }
   }
+}
+
+/**
+ * Run fn while holding a lock directory. opts: waitMs (how long to try), staleMs (a lock this old was
+ * left by a process that died), force (when the lock cannot be had in time, or cannot be made at all,
+ * run fn anyway instead of throwing).
+ * It keeps writers that start together apart; it is not a guarantee. A lock taken over as stale has no
+ * owner mark, so in that moment two writers can get in, which is what happened all the time without it.
+ */
+function withLock(name, fn, opts = {}) {
+  ensure();
+  const lock = p(`${name}.lock`);
+  const until = Date.now() + (opts.waitMs || 3000);
+  const staleMs = opts.staleMs || 5000;
+  let mine = false;
+  for (;;) {
+    try {
+      fs.mkdirSync(lock);
+      mine = true;
+      break;
+    } catch (e) {
+      // EEXIST: held. EPERM: Windows, while the last holder removes it. Anything else will not get better.
+      const wait = e.code === 'EEXIST' || e.code === 'EPERM';
+      if (!wait && !opts.force) throw e;
+      if (wait) {
+        try {
+          if (Date.now() - fs.statSync(lock).mtimeMs > staleMs) fs.rmdirSync(lock);
+        } catch {}
+      }
+      if (!wait || Date.now() >= until) {
+        if (opts.force) break;
+        throw new Error(`switchboard: could not lock ${name}`);
+      }
+      sleepSync(15);
+    }
+  }
+  if (mine) held.add(lock);
   try {
     return fn();
   } finally {
-    try {
-      fs.rmdirSync(lock);
-    } catch {}
+    if (mine) {
+      held.delete(lock);
+      unlock(lock);
+    }
   }
 }
 
@@ -120,7 +169,9 @@ function clip(text, max) {
   return s.length > max ? `${s.slice(0, max - 1)}…` : s;
 }
 function oneLine(text, max) {
-  return clip(String(text == null ? '' : text).replace(/\s+/g, ' ').trim(), max);
+  // Cut first: a prompt can be megabytes, and only the start is kept.
+  const head = String(text == null ? '' : text).slice(0, (max || 0) * 20 + 2000);
+  return clip(head.replace(/\s+/g, ' ').trim(), max);
 }
 /** Notes are data: drop control characters and anything that imitates Switchboard's own wrapper tag. */
 function cleanText(text) {
@@ -147,15 +198,58 @@ function sessionFile(id) {
 function getSession(id) {
   return readJson(sessionFile(id), null);
 }
+/**
+ * Read a session, let fn(current or null) return the whole next record, and write it, all under that
+ * session's lock: hooks run as separate processes, several at a time, and without the lock two of them
+ * read the same record and the slower one writes the other's change away. fn returns null for "no change".
+ * A lock that cannot be had within about half a second is skipped: an event must not be dropped, and the
+ * hooks Claude waits for must not hold it up.
+ */
+function updateSession(id, fn) {
+  return withLock(
+    `sessions/${safeId(id)}`,
+    () => {
+      const cur = readForUpdate(sessionFile(id));
+      const next = fn(cur);
+      if (!next) return cur;
+      const now = Date.now();
+      const out = { createdAt: now, ...next, id, updatedAt: now };
+      if (!out.statusSince) out.statusSince = now;
+      writeJsonAtomic(sessionFile(id), out);
+      return out;
+    },
+    { waitMs: 400, staleMs: 1500, force: true }
+  );
+}
+/**
+ * The record a writer builds on. No file means no record yet, and a file that is not JSON is started over.
+ * A file that is there but cannot be opened right now (Windows: a scanner or another writer has it) is
+ * neither: writing a new record over it would wipe its title, label and prompts. Then the change is
+ * given up, which costs one event.
+ */
+function readForUpdate(file) {
+  for (let i = 0; ; i++) {
+    try {
+      const raw = fs.readFileSync(file, 'utf8');
+      if (raw.trim()) return JSON.parse(raw);
+      if (i >= 2) return null;
+    } catch (e) {
+      if (e.code === 'ENOENT') return null;
+      if (e instanceof SyntaxError) {
+        if (i >= 2) return null;
+      } else if (i >= 12) throw e;
+    }
+    sleepSync(15);
+  }
+}
+/** Change some fields of a session. A changed status starts its clock now, unless the patch gives statusSince. */
 function upsertSession(id, patch) {
-  ensure();
-  const now = Date.now();
-  const cur = getSession(id) || { id, createdAt: now, status: 'idle', seen: true };
-  const next = { ...cur, ...patch, id, updatedAt: now };
-  if (patch.status && patch.status !== cur.status) next.statusSince = now;
-  if (!next.statusSince) next.statusSince = now;
-  writeJsonAtomic(sessionFile(id), next);
-  return next;
+  return updateSession(id, (cur) => {
+    const base = cur || { id, status: 'idle', seen: true };
+    const next = { ...base, ...patch };
+    if (patch.status && patch.status !== base.status && patch.statusSince === undefined) next.statusSince = Date.now();
+    return next;
+  });
 }
 function forgetSession(id) {
   for (const f of [sessionFile(id), p('cursors', `${safeId(id)}.json`), p('seen', safeId(id))]) {
@@ -194,7 +288,7 @@ function seenAt(id) {
 }
 /**
  * What the user should know about a session, as one word:
- *   blocked  waiting for the user (permission, question, error)
+ *   blocked  waiting for the user (permission, question, error, a refused prompt not looked at yet)
  *   done     finished and not looked at yet
  *   working  busy
  *   idle     finished and seen, or just opened
@@ -202,7 +296,9 @@ function seenAt(id) {
  */
 function viewState(s) {
   if (!s) return 'closed';
-  if (s.status === 'closed' || s.status === 'blocked' || s.status === 'working') return s.status;
+  if (s.status === 'closed' || s.status === 'working') return s.status;
+  // A prompt that a hook refused has nothing left to answer: once the user has looked, it is not waiting.
+  if (s.status === 'blocked') return s.refused && seenAt(s.id) >= (s.statusSince || 0) ? 'idle' : 'blocked';
   if (s.status === 'done') return s.seen || seenAt(s.id) >= (s.statusSince || 0) ? 'idle' : 'done';
   return 'idle';
 }
@@ -240,6 +336,12 @@ function listSessions(opts = {}) {
     if (s.headless && !opts.includeHeadless) continue;
     if (s.status === 'closed' && opts.includeClosed === false) continue;
     applyRefusal(s);
+    // The hook stores the title at the session's start, at each prompt and at each Stop. A session it has
+    // not heard from since, or one in its first turn, has none yet although its transcript does.
+    if (!s.title && s.transcript && s.status !== 'closed') {
+      const title = scanTail(s.transcript, 'title', () => titleFromTranscript(s.transcript));
+      if (title) s.title = title;
+    }
     out.push(s);
   }
   out.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
@@ -387,7 +489,24 @@ function recentTurns(file, opts = {}) {
 // ───────────────────────── prompts a hook refused ─────────────────────────
 
 const REFUSED = /^UserPromptSubmit operation blocked by hook:?\s*/;
-const tailScans = new Map(); // transcript path -> { size, mtimeMs, found }
+const tailScans = new Map(); // kind + transcript path -> { size, mtimeMs, found }
+
+/** What scan() found in a transcript, read again only when the file has changed. A missing file gives null. */
+function scanTail(file, kind, scan) {
+  let st;
+  try {
+    st = fs.statSync(file);
+  } catch {
+    return null;
+  }
+  const key = `${kind}\n${file}`;
+  const hit = tailScans.get(key);
+  if (hit && hit.size === st.size && hit.mtimeMs === st.mtimeMs) return hit.found;
+  const found = scan();
+  if (tailScans.size > 500) tailScans.clear();
+  tailScans.set(key, { size: st.size, mtimeMs: st.mtimeMs, found });
+  return found;
+}
 
 /** A transcript line that shows a turn running. What a local slash command (/model, /help) leaves behind is not one. */
 function isTurnLine(o) {
@@ -404,14 +523,9 @@ function isTurnLine(o) {
  * transcript. Returns { at, reason } or null. An unreadable or unfamiliar transcript gives null.
  */
 function lastRefusal(file) {
-  let st;
-  try {
-    st = fs.statSync(file);
-  } catch {
-    return null;
-  }
-  const hit = tailScans.get(file);
-  if (hit && hit.size === st.size && hit.mtimeMs === st.mtimeMs) return hit.found;
+  return scanTail(file, 'refusal', () => findRefusal(file));
+}
+function findRefusal(file) {
   let found = null;
   const lines = readTail(file, 128 * 1024).split('\n');
   for (let i = lines.length - 1; i >= 0; i--) {
@@ -434,8 +548,6 @@ function lastRefusal(file) {
     }
     if (isTurnLine(o)) break;
   }
-  if (tailScans.size > 500) tailScans.clear();
-  tailScans.set(file, { size: st.size, mtimeMs: st.mtimeMs, found });
   return found;
 }
 
@@ -763,9 +875,11 @@ module.exports = {
   ensure,
   clip,
   oneLine,
+  hash,
   pidAlive,
   // sessions
   getSession,
+  updateSession,
   upsertSession,
   forgetSession,
   listSessions,

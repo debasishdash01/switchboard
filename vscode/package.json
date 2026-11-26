@@ -124,6 +124,11 @@
           "type": "number",
           "default": 12,
           "description": "How many closed sessions to keep in the Closed group. They can be reopened with a click."
+        },
+        "switchboard.useInstalledStore": {
+          "type": "boolean",
+          "default": true,
+          "description": "Read the store with the code in ~/.switchboard/app (the copy the hooks run from) and pick up changes to it without a window reload. Turn off to use only the copy packaged with this extension."
         }
       }
     }

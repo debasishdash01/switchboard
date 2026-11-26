@@ -9,7 +9,58 @@
  */
 const vscode = require('vscode');
 const fs = require('fs');
-const store = require('./lib/store.js');
+const path = require('path');
+const bundled = require('./lib/store.js');
+
+/**
+ * The store code in use. The extension carries a copy, but the installer also puts one in
+ * ~/.switchboard/app, the copy every hook runs from. That one is used when it is there and re-read
+ * when it changes, so the sidebar and the hooks read the store the same way and a fix to the store code
+ * reaches an open window without a reload. A copy that does not load, or is older than this extension
+ * (lacks a function it calls), is not used.
+ */
+let store = bundled;
+let storeStamp = '';
+let storeTries = 0;
+function syncStore() {
+  let file = '';
+  let stamp = 'bundled';
+  if (vscode.workspace.getConfiguration('switchboard').get('useInstalledStore') !== false) {
+    try {
+      file = path.join(bundled.home(), 'app', 'store.js');
+      const st = fs.statSync(file);
+      stamp = `${st.size}:${st.mtimeMs}`;
+    } catch {
+      file = ''; // not installed there (a development run): the bundled copy
+    }
+  }
+  if (stamp !== storeStamp) storeTries = 0;
+  else if (!storeTries) return false; // this version of the file is in use, or was given up on
+  storeStamp = stamp;
+  let next = bundled;
+  if (file) {
+    try {
+      delete require.cache[require.resolve(file)];
+      const fresh = require(file);
+      const missing = Object.keys(bundled).filter((k) => typeof bundled[k] === 'function' && typeof fresh[k] !== 'function');
+      if (missing.length) throw new Error(`it is older than this extension (no ${missing.slice(0, 3).join(', ')})`);
+      // It must also work on the store as it is now: the sidebar calls these on every refresh.
+      for (const s of fresh.listSessions({ includeHeadless: true })) fresh.viewState(s);
+      fresh.listRooms();
+      next = fresh;
+      storeTries = 0;
+    } catch (e) {
+      // Caught half-copied, held open for a moment, or broken: stay on what works. The same file is
+      // tried three times (the next refreshes); a file that changes is tried again from the start.
+      storeTries = storeTries >= 2 ? 0 : storeTries + 1;
+      if (!storeTries) console.error(`switchboard: not using ${file}: ${e && e.message}`);
+      next = store;
+    }
+  }
+  if (next === store) return false;
+  store = next;
+  return true;
+}
 
 const STATE = {
   blocked: { group: 'Needs you', icon: 'bell-dot', color: 'charts.red', order: 0 },
@@ -46,10 +97,11 @@ class Model {
     try {
       sessions = store.listSessions({ includeHeadless: cfg().get('showHeadless'), prune: true });
       rooms = store.listRooms();
+      for (const s of sessions) s.view = store.viewState(s);
     } catch (e) {
       console.error('switchboard: load failed', e);
+      return false; // keep what is shown
     }
-    for (const s of sessions) s.view = store.viewState(s);
     const next = new Map(sessions.map((s) => [s.id, s.view]));
     if (this.prev) {
       for (const s of sessions) {
@@ -247,6 +299,7 @@ class NotesDocs {
 // ───────────────────────── activation ─────────────────────────
 
 function activate(context) {
+  syncStore();
   store.ensure();
   const model = new Model();
   const sessionsView = vscode.window.createTreeView('switchboard.sessions', { treeDataProvider: new SessionsProvider(model), showCollapseAll: false });
@@ -269,9 +322,11 @@ function activate(context) {
     if (!hits.length) hits = open.filter((s) => names(s).some((n) => n.startsWith(label) || label.startsWith(n)));
     return hits.length === 1 ? hits[0] : null;
   }
+  // What stops asking for attention once the user has looked: a finished turn, and a prompt a hook refused.
+  const clearsWhenSeen = (s) => s.view === 'done' || (s.view === 'blocked' && s.refused);
   function seeActive() {
     const s = activeClaudeSession();
-    if (s && s.view === 'done') {
+    if (s && clearsWhenSeen(s)) {
       store.markSeen(s.id);
       schedule();
     }
@@ -284,7 +339,14 @@ function activate(context) {
     timer = setTimeout(refresh, ms);
   }
   function refresh() {
+    if (syncStore()) model.sig = null; // other code may read the store differently: draw again
     model.load();
+    // The tab in front has been looked at, whatever the notification setting says.
+    const front = activeClaudeSession();
+    if (front && clearsWhenSeen(front)) {
+      store.markSeen(front.id);
+      model.load();
+    }
     const blocked = model.sessions.filter((s) => s.view === 'blocked').length;
     const done = model.sessions.filter((s) => s.view === 'done').length;
     const working = model.sessions.filter((s) => s.view === 'working').length;
@@ -317,7 +379,10 @@ function activate(context) {
           if (!now || store.viewState(now) !== state) return;
           const active = activeClaudeSession();
           if (active && active.id === session.id) {
-            if (state === 'done') store.markSeen(session.id);
+            if (clearsWhenSeen(active)) {
+              store.markSeen(session.id);
+              schedule();
+            }
             return;
           }
           const name = store.displayName(now);
@@ -459,7 +524,7 @@ function activate(context) {
       const id = await pickSession('Switch to a Claude session');
       if (id) await openSession(id);
     },
-    markAllSeen: () => model.sessions.filter((s) => s.view === 'done').forEach((s) => store.markSeen(s.id)),
+    markAllSeen: () => model.sessions.filter(clearsWhenSeen).forEach((s) => store.markSeen(s.id)),
     linkSessions,
     newRoom,
     shareNote,

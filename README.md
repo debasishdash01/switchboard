@@ -14,7 +14,7 @@ It brings the parts of [cmux](https://github.com/manaflow-ai/cmux) that matter f
 
 | Group | Meaning |
 |---|---|
-| Needs you | Waiting for a permission click, an answer to a question, or stopped on an error. Also when another tool's hook stopped your last prompt, with that hook's reason |
+| Needs you | Waiting for a permission click (also when a subagent asks for one), an answer to a question, or stopped on an error. Also when another tool's hook stopped your last prompt, with that hook's reason, until you have looked at that session |
 | Finished · not seen yet | The turn ended and you have not looked at it |
 | Working | Busy (including background tasks that are still running; a monitor that only watches does not count) |
 | Idle | Finished and seen |
@@ -38,13 +38,15 @@ It brings the parts of [cmux](https://github.com/manaflow-ai/cmux) that matter f
 
 ## Install
 
-Needs Node 18+, Claude Code, and VS Code with the Claude Code extension.
+Needs Node 18+, Claude Code, and VS Code with the Claude Code extension. Tested on Claude Code 2.1.322. One of the hook events it registers is `PostToolBatch`; a Claude Code too old to know that event ignores the entry and says so at startup.
 
 ```
 node install.js
 ```
 
 Then reload the VS Code window. Sessions that were already open show up after you restart their tab, because Claude Code loads hooks and tools when a session starts.
+
+After an update, a reload is needed only when the extension itself changed. The sidebar reads the store with the code in `~/.switchboard/app` and picks up a new copy by itself (`switchboard.useInstalledStore`).
 
 The installer changes exactly these things:
 
@@ -100,11 +102,14 @@ Claude session ──hook──▶ ~/.switchboard/ (plain files) ◀── VS Co
 - "Seen" is detected by matching the focused tab's title to the session title. Two open sessions with the same title are marked seen only when opened from the sidebar.
 - Links attach to sessions. A brand-new session on the same topic starts unlinked.
 - A prompt that another tool's hook stops is recognised from the notice Claude Code writes to the session's transcript. That format is not a documented interface; if it changes, such a session shows as Working until its next prompt finishes.
+- A turn you interrupt with Esc sends no hook event. The session stays on Working (or on Needs you, if a dialog was open) until its next prompt.
+- Claude Code sends no event when you grant a permission. The session stays under Needs you until that batch of tool calls ends.
+- A background task that never ends, such as a dev server, keeps its session on Working.
 
 ## Development
 
 ```
-node --test test/switchboard.test.js test/extension.test.js   # 24 tests
+node --test test/switchboard.test.js test/extension.test.js   # 38 tests
 node test/e2e-config.js /tmp/sb    # config to try real sessions without installing
 ```
 

@@ -223,6 +223,79 @@ test('a session whose prompt a hook refused sits under "Needs you" with the hook
   assert.ok(ui.messages.some(([kind, msg]) => kind === 'warn' && /Policy check.*needs you: A hook stopped your last prompt/.test(msg)));
 });
 
+test('a refused prompt drops to Idle once its tab has been looked at; the next refusal shows again', async () => {
+  const group = (name) => ui.views['switchboard.sessions'].provider.getChildren().find((g) => g.label === name);
+  const under = (name) => ((group(name) || {}).children || []).some((c) => c.label === 'Policy check');
+  assert.ok(under('Needs you'));
+  // The user goes to that tab. Nothing is left to answer there.
+  ui.activeTab = { label: 'Policy check', input: new TabInputWebview('claudeVSCodePanel') };
+  ui.tabsChanged();
+  await sleep(450);
+  assert.ok(under('Idle'), 'looked at: idle');
+  assert.ok(!under('Needs you'));
+
+  // Another prompt is refused while the user is in a different tab.
+  ui.activeTab = null;
+  const transcript = store.getSession('pol').transcript;
+  const at = Date.now() + 30;
+  store.upsertSession('pol', { promptAt: at });
+  const notice = { isSidechain: false, type: 'system', subtype: 'informational', timestamp: new Date(at + 20).toISOString(), content: 'UserPromptSubmit operation blocked by hook:\nBaton is on for this session.' };
+  fs.appendFileSync(transcript, `${JSON.stringify(notice)}\n`);
+  await ui.commands['switchboard.refresh']();
+  assert.ok(under('Needs you'), 'a refusal that has not been looked at');
+
+  // And one that happens in the tab the user is typing in never asks for attention.
+  ui.messages.length = 0;
+  ui.activeTab = { label: 'Policy check', input: new TabInputWebview('claudeVSCodePanel') };
+  await sleep(60); // past the notice's time, which the test set slightly ahead
+  await ui.commands['switchboard.refresh']();
+  assert.ok(under('Idle'));
+  await sleep(1200);
+  assert.strictEqual(ui.messages.length, 0, 'no notification for the tab in front');
+  ui.activeTab = null;
+});
+
+test('the sidebar reads the store with the installed code and picks up a change without a reload', async () => {
+  const labels = () => ui.views['switchboard.sessions'].provider.getChildren().flatMap((g) => g.children.map((c) => c.label));
+  assert.ok(labels().includes('Tax FY25-26'), 'nothing installed: the packaged copy');
+
+  // What the installer puts in <home>/app. Here a "fixed" copy that names sessions differently.
+  const app = path.join(HOME, 'app');
+  fs.mkdirSync(app, { recursive: true });
+  const src = fs.readFileSync(path.join(root, 'core', 'store.js'), 'utf8');
+  const marked = src.replace("if (!s) return 'unknown session';", "if (!s) return 'unknown session';\n  if (s.title) return `${s.title} *`;");
+  assert.notStrictEqual(marked, src);
+  fs.writeFileSync(path.join(app, 'store.js'), marked);
+  await ui.commands['switchboard.refresh']();
+  assert.ok(labels().includes('Tax FY25-26 *'), 'the installed copy is in use');
+
+  // A copy that does not load (caught half-written), one from an older version, and one that loads but
+  // fails when used: none is used, however often the sidebar refreshes.
+  const refreshes = async (n) => {
+    for (let i = 0; i < n; i++) await ui.commands['switchboard.refresh']();
+  };
+  fs.writeFileSync(path.join(app, 'store.js'), 'this is not javascript (');
+  await refreshes(5);
+  assert.ok(labels().includes('Tax FY25-26 *'), 'a broken copy changes nothing');
+  fs.writeFileSync(path.join(app, 'store.js'), "module.exports = { home: () => 'x', listSessions: () => [] };");
+  await refreshes(5);
+  assert.ok(labels().includes('Tax FY25-26 *'), 'a copy that lacks what the extension calls is not used');
+  fs.writeFileSync(path.join(app, 'store.js'), src.replace('function viewState(s) {', "function viewState(s) {\n  throw new Error('bad build');"));
+  await refreshes(5);
+  assert.ok(labels().includes('Tax FY25-26 *'), 'a copy that throws when used is not used');
+
+  // The next good copy is picked up; with none, the packaged copy again.
+  fs.writeFileSync(path.join(app, 'store.js'), src);
+  await ui.commands['switchboard.refresh']();
+  assert.ok(labels().includes('Tax FY25-26') && !labels().includes('Tax FY25-26 *'));
+  fs.writeFileSync(path.join(app, 'store.js'), marked);
+  await ui.commands['switchboard.refresh']();
+  assert.ok(labels().includes('Tax FY25-26 *'));
+  fs.rmSync(path.join(app, 'store.js'));
+  await ui.commands['switchboard.refresh']();
+  assert.ok(labels().includes('Tax FY25-26') && !labels().includes('Tax FY25-26 *'));
+});
+
 test.after(() => {
   ctx.subscriptions.forEach((d) => d && d.dispose && d.dispose());
   fs.rmSync(HOME, { recursive: true, force: true });

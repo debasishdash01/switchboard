@@ -35,7 +35,17 @@ const fwd = (p) => p.replace(/\\/g, '/');
 const log = (s) => console.log(s);
 const step = (s) => console.log(`\n== ${s}`);
 
-/** Hook entries. Status-only events run in the background so they never slow Claude down. */
+/**
+ * Hook entries. Status-only events run in the background so they never slow Claude down.
+ * PostToolBatch (once per batch of tool calls) replaced PostToolUse (once per call): it is the event that
+ * says "every call has its answer", and it starts far fewer hook processes. Tested on Claude Code 2.1.322.
+ * A Claude Code too old to know the event ignores the entry and says so at startup; hook.js still
+ * understands PostToolUse, so on such a version register that event by hand in its place.
+ * PermissionRequest and the two PreToolUse cases are waited for (about 35 ms before a dialog; they print
+ * nothing, so the dialog shows as usual). A call that cannot be asked about is refused about 15 ms after
+ * its request (measured), and PostToolBatch follows at once. In the background the two could land in the
+ * wrong order and leave a "needs you" for a dialog that never opened.
+ */
 function hookConfig(hookPath) {
   const command = `node "${fwd(hookPath)}"`;
   const h = (extra = {}) => ({ type: 'command', command, timeout: 5, ...extra });
@@ -43,9 +53,9 @@ function hookConfig(hookPath) {
     SessionStart: [{ hooks: [h()] }],
     UserPromptSubmit: [{ hooks: [h()] }],
     Notification: [{ hooks: [h({ async: true })] }],
-    PermissionRequest: [{ hooks: [h({ async: true })] }],
-    PreToolUse: [{ matcher: 'AskUserQuestion|ExitPlanMode', hooks: [h({ async: true })] }],
-    PostToolUse: [{ hooks: [h({ async: true })] }],
+    PermissionRequest: [{ hooks: [h()] }],
+    PreToolUse: [{ matcher: 'AskUserQuestion|ExitPlanMode', hooks: [h()] }],
+    PostToolBatch: [{ hooks: [h({ async: true })] }],
     Stop: [{ hooks: [h({ async: true })] }],
     StopFailure: [{ hooks: [h({ async: true })] }],
     SessionEnd: [{ hooks: [h()] }],
@@ -173,7 +183,8 @@ function install() {
   log(`
 Done.
 - Reload the VS Code window (Ctrl+Shift+P → "Developer: Reload Window"), then open the Switchboard icon in the activity bar.
-- Claude sessions that were already open pick up the hooks and tools only after their tab is restarted.
+  A reload is needed for a new or changed extension only. Changes to the store code reach an open sidebar by themselves.
+- Claude sessions that were already open pick up new hook events and tools only after their tab is restarted.
 - Check the setup any time with:  node "${fwd(path.join(APP, 'cli.js'))}" doctor
 - Turn the hooks off without uninstalling: set the environment variable SWITCHBOARD_HOOKS_DISABLED=1`);
 }
