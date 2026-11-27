@@ -23,6 +23,7 @@ It brings the parts of [cmux](https://github.com/manaflow-ai/cmux) that matter f
 - Click a session to open it. `Ctrl+Alt+U` (`Cmd+Alt+U`) jumps to the next one that needs you. `Ctrl+Alt+J` switches by name.
 - The icon shows a count; the status bar shows `2 need you · 1 finished · 3 working`.
 - A notification appears when a session you are not looking at starts needing you or finishes (`switchboard.notify`: `all`, `blocked`, `off`).
+- A row shows `✉ 2 notes waiting` when shared notes are queued for that session's next prompt. Hover it to see which rooms they are from. It only tells you; it does not wake the session.
 
 **Rooms view** (shared context)
 
@@ -97,7 +98,7 @@ Claude session ──hook──▶ ~/.switchboard/ (plain files) ◀── VS Co
 
 ## Limits in 0.1
 
-- A note is delivered with the receiving session's **next prompt**. It does not wake an idle session.
+- A note is delivered with the receiving session's **next prompt**. It does not wake an idle session; the row's `notes waiting` count shows that something is there. To wake a session once, ask Claude to use the built-in `SendMessage`.
 - A session running in a terminal is listed, but clicking it cannot bring that terminal to the front.
 - "Seen" is detected by matching the focused tab's title to the session title. Two open sessions with the same title are marked seen only when opened from the sidebar.
 - Links attach to sessions. A brand-new session on the same topic starts unlinked.

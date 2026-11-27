@@ -140,5 +140,5 @@ Terminal multiplexing, a browser pane, remote or cloud sessions, sessions on oth
 ## Handoff
 
 - Ready for implementation: yes, and implemented in 0.1.
-- Verification: 38 automated tests; an end-to-end run with two real Claude sessions (one shared through the tool, the other received the note with its next prompt); two headless runs that recorded which hook events Claude Code 2.1.322 sends for a subagent's permission request and for a queued prompt.
+- Verification: 45 automated tests (2026-11-27); an end-to-end run with two real Claude sessions (one shared through the tool, the other received the note with its next prompt); two headless runs that recorded which hook events Claude Code 2.1.322 sends for a subagent's permission request and for a queued prompt.
 - Still to verify by hand in VS Code: the open questions above and the look of the two views.

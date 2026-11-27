@@ -384,6 +384,37 @@ test('the sidebar reads the store with the installed code and picks up a change 
   assert.ok(labels().includes('Tax FY25-26') && !labels().includes('Tax FY25-26 *'));
 });
 
+test('a row says how many shared notes wait for its next prompt, and nothing wakes the tab', async () => {
+  const row = (id) => ui.views['switchboard.sessions'].provider.getChildren().flatMap((g) => g.children || []).find((i) => i.sessionId === id);
+  const executed = ui.executed.length;
+  await ui.commands['switchboard.refresh']();
+  // From the earlier test: one note in "Tax + Business" (tax and biz) and one in Everyone.
+  assert.match(row('tax').description, /✉ 2 notes waiting/);
+  assert.match(row('tax').tooltip.value, /Notes waiting:\*\* Tax \+ Business \(1\), Everyone \(1\)\. They arrive with this tab's next prompt/);
+  assert.match(row('wiki').description, /✉ 1 note waiting/, 'not in the room: the broadcast only');
+  assert.doesNotMatch(row('old').description, /waiting/, 'a closed session gets them when it is resumed');
+
+  // A note a tab shared itself does not wait for it.
+  store.postNote(store.ALL, { from: 'wiki', text: 'Wiki build is green.' });
+  await ui.commands['switchboard.refresh']();
+  assert.match(row('wiki').description, /✉ 1 note waiting/);
+  assert.match(row('biz').description, /✉ 3 notes waiting/);
+
+  // Delivered with the tab's next prompt: the row redraws without any other change.
+  assert.strictEqual(store.collectInjection('tax').notes, 3);
+  await ui.commands['switchboard.refresh']();
+  assert.doesNotMatch(row('tax').description, /waiting/);
+  assert.doesNotMatch(row('tax').tooltip.value, /Notes waiting/);
+
+  // A tab that muted Everyone is not told about broadcasts.
+  store.upsertSession('wiki', { muteAll: true });
+  await ui.commands['switchboard.refresh']();
+  assert.doesNotMatch(row('wiki').description, /waiting/);
+  store.upsertSession('wiki', { muteAll: false });
+
+  assert.strictEqual(ui.executed.length, executed, 'showing the count opens or wakes nothing');
+});
+
 test.after(() => {
   ctx.subscriptions.forEach((d) => d && d.dispose && d.dispose());
   fs.rmSync(HOME, { recursive: true, force: true });

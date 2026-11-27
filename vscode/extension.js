@@ -82,6 +82,18 @@ function ago(ts) {
 }
 const cfg = () => vscode.workspace.getConfiguration('switchboard');
 const nameOf = (id) => (id === 'user' ? 'You' : store.displayName(store.getSession(id)));
+
+/**
+ * Shared notes a tab has not been given yet, per room: [{ room, count }]. They arrive with its next prompt;
+ * showing the count is all the sidebar does (it never starts a turn). Reads only, like the delivery would.
+ */
+function notesWaiting(sid) {
+  try {
+    return store.unreadFor(sid).map(({ room, notes }) => ({ room: room.name, count: notes.length }));
+  } catch {
+    return []; // a cursor or notes file caught mid-write: the next refresh counts again
+  }
+}
 const mdEscape = (s) => String(s || '').replace(/[\\`*_{}[\]<>]/g, '\\$&');
 
 // ───────────────────────── second opinion: `claude agents --json --all` ─────────────────────────
@@ -154,6 +166,7 @@ class Model {
       const snap = cfg().get('checkWithClaudeAgents') === true ? agents.snap : null; // turned off: no old answers either
       for (const s of sessions) store.applyAgentView(s, snap, now);
       for (const s of sessions) s.view = store.viewState(s);
+      for (const s of sessions) s.notesWaiting = s.view === 'closed' ? [] : notesWaiting(s.id);
     } catch (e) {
       console.error('switchboard: load failed', e);
       return false; // keep what is shown
@@ -173,7 +186,7 @@ class Model {
     // Redraw only when something visible changed (ages are shown to the minute).
     const sig = JSON.stringify([
       Math.floor(Date.now() / 60000),
-      sessions.map((s) => [s.id, s.view, s.attention, store.displayName(s), s.bg, s.muteAll, s.watch, s.statusSince, s.lastPrompt]),
+      sessions.map((s) => [s.id, s.view, s.attention, store.displayName(s), s.bg, s.muteAll, s.watch, s.statusSince, s.lastPrompt, s.notesWaiting]),
       rooms.map((r) => [r.id, r.name, r.members, store.readNotes(r.id, { limit: 1 }).map((n) => n.id), store.getPin(r.id).length]),
     ]);
     if (sig === this.sig) return false;
@@ -202,8 +215,11 @@ function sessionItem(model, s, contextValue = 'session') {
   item.id = `${contextValue}:${s.id}`;
   item.sessionId = s.id;
   const rooms = model.roomsOf(s.id).map((r) => r.name);
+  const waiting = s.notesWaiting || [];
+  const queued = waiting.reduce((n, w) => n + w.count, 0);
   const bits = [];
   if (s.view === 'blocked' && s.attention) bits.push(s.attention);
+  if (queued) bits.push(`✉ ${queued} note${queued === 1 ? '' : 's'} waiting`);
   if (rooms.length) bits.push(`⇄ ${rooms.join(', ')}`);
   if (s.bg) bits.push(`${s.bg} background`);
   if (s.entrypoint && s.entrypoint !== 'claude-vscode') bits.push('terminal');
@@ -220,6 +236,10 @@ function sessionItem(model, s, contextValue = 'session') {
   if (s.lastPrompt) tip.appendMarkdown(`**Last prompt:** ${mdEscape(s.lastPrompt)}\n\n`);
   if (s.lastReply) tip.appendMarkdown(`**Last reply:** ${mdEscape(s.lastReply)}\n\n`);
   if (rooms.length) tip.appendMarkdown(`**Linked in:** ${mdEscape(rooms.join(', '))}\n\n`);
+  if (queued) {
+    const where = waiting.map((w) => `${w.room} (${w.count})`).join(', ');
+    tip.appendMarkdown(`**Notes waiting:** ${mdEscape(where)}. They arrive with this tab's next prompt.\n\n`);
+  }
   if (s.agentView) tip.appendMarkdown(`_Status from \`claude agents\` at ${new Date(s.agentView).toLocaleTimeString()}: the hooks had not reported it._\n\n`);
   tip.appendMarkdown(`\`${s.cwd || ''}\` · \`${s.id.slice(0, 8)}\``);
   item.tooltip = tip;
