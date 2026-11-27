@@ -5,10 +5,13 @@
  *   - a Sessions view (status, "needs you", jump to a session)
  *   - a Rooms view (linked sessions, shared notes, pinned briefs)
  *   - a status-bar counter and notifications
- * It talks to the Claude Code extension only through its public commands.
+ * It talks to the Claude Code extension only through its public commands, and runs one documented
+ * Claude Code command (`claude agents --json --all`) when a status looks stale.
  */
 const vscode = require('vscode');
 const fs = require('fs');
+const os = require('os');
+const { execFile } = require('child_process');
 const path = require('path');
 const bundled = require('./lib/store.js');
 
@@ -81,6 +84,50 @@ const cfg = () => vscode.workspace.getConfiguration('switchboard');
 const nameOf = (id) => (id === 'user' ? 'You' : store.displayName(store.getSession(id)));
 const mdEscape = (s) => String(s || '').replace(/[\\`*_{}[\]<>]/g, '\\$&');
 
+// ───────────────────────── second opinion: `claude agents --json --all` ─────────────────────────
+// Claude Code's own list of live sessions says busy, waiting or idle. It is asked only when a stored status
+// looks stale (store.looksStale), at most every 20 s, and about the same unchanged state again only after a
+// growing pause (30 s, 1, 2, 4 … up to 30 min), so a session that waits an hour for an answer costs a
+// handful of calls. It is a local command: no tokens. Three failures in a row and this window stops asking.
+const agents = { snap: null, busy: false, lastAt: 0, asked: new Map(), failures: 0 };
+const AGENTS_GAP_MS = 20000;
+
+function askAgents(stale, done) {
+  if (cfg().get('checkWithClaudeAgents') !== true || agents.busy || agents.failures >= 3) return;
+  const now = Date.now();
+  if (now - agents.lastAt < AGENTS_GAP_MS) return;
+  const due = stale.filter(({ key }) => {
+    const a = agents.asked.get(key);
+    return !a || now - a.at > Math.min(30 * 60000, 30000 * 2 ** a.n);
+  });
+  if (!due.length) return;
+  agents.busy = true;
+  agents.lastAt = now;
+  const set = String(cfg().get('claudePath') || '').trim();
+  const run = (cmd, retry) =>
+    // Claude Code's update checks and telemetry are turned off for this call (fixed rule 1: local only).
+    execFile(cmd, ['agents', '--json', '--all'], { timeout: 10000, windowsHide: true, maxBuffer: 8 * 1024 * 1024, env: { ...process.env, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' } }, (err, stdout) => {
+      // A VS Code started before ~/.local/bin was on the PATH cannot find `claude`; the native installer puts it there.
+      if (err && err.code === 'ENOENT' && retry) return run(path.join(os.homedir(), '.local', 'bin', process.platform === 'win32' ? 'claude.exe' : 'claude'), false);
+      agents.busy = false;
+      const snap = err ? null : store.parseAgents(stdout, Date.now());
+      if (!snap) {
+        agents.failures++;
+        if (agents.failures >= 3) console.error(`switchboard: stopped asking \`claude agents\` (${err ? err.message : 'output not understood'})`);
+        return;
+      }
+      agents.failures = 0;
+      agents.snap = snap;
+      for (const { key } of due) {
+        const a = agents.asked.get(key);
+        agents.asked.set(key, { n: a ? a.n + 1 : 0, at: Date.now() });
+      }
+      if (agents.asked.size > 500) agents.asked.clear();
+      done();
+    });
+  run(set || 'claude', !set);
+}
+
 // ───────────────────────── model ─────────────────────────
 
 class Model {
@@ -98,6 +145,14 @@ class Model {
     try {
       sessions = store.listSessions({ includeHeadless: cfg().get('showHeadless'), prune: true });
       rooms = store.listRooms();
+      // What looks stale is judged on what the hooks wrote, before the second opinion is applied.
+      const now = Date.now();
+      // One key per unchanged state: a new sign of life (the hook or the transcript) starts the pauses over.
+      this.stale = sessions
+        .filter((s) => store.looksStale(s, now))
+        .map((s) => ({ id: s.id, key: `${s.id}:${s.status}:${Math.max(s.updatedAt || 0, s.activeAt || 0)}` }));
+      const snap = cfg().get('checkWithClaudeAgents') === true ? agents.snap : null; // turned off: no old answers either
+      for (const s of sessions) store.applyAgentView(s, snap, now);
       for (const s of sessions) s.view = store.viewState(s);
     } catch (e) {
       console.error('switchboard: load failed', e);
@@ -165,6 +220,7 @@ function sessionItem(model, s, contextValue = 'session') {
   if (s.lastPrompt) tip.appendMarkdown(`**Last prompt:** ${mdEscape(s.lastPrompt)}\n\n`);
   if (s.lastReply) tip.appendMarkdown(`**Last reply:** ${mdEscape(s.lastReply)}\n\n`);
   if (rooms.length) tip.appendMarkdown(`**Linked in:** ${mdEscape(rooms.join(', '))}\n\n`);
+  if (s.agentView) tip.appendMarkdown(`_Status from \`claude agents\` at ${new Date(s.agentView).toLocaleTimeString()}: the hooks had not reported it._\n\n`);
   tip.appendMarkdown(`\`${s.cwd || ''}\` · \`${s.id.slice(0, 8)}\``);
   item.tooltip = tip;
   return item;
@@ -345,6 +401,7 @@ function activate(context) {
   function refresh() {
     if (syncStore()) model.sig = null; // other code may read the store differently: draw again
     model.load();
+    askAgents(model.stale || [], () => schedule(0));
     // The tab in front has been looked at, whatever the notification setting says.
     const front = activeClaudeSession();
     if (front && clearsWhenSeen(front)) {

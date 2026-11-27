@@ -32,7 +32,7 @@ class TabInputWebview {
     this.viewType = viewType;
   }
 }
-const ui = { executed: [], messages: [], picks: [], inputs: [], activeTab: null, views: {}, commands: {}, status: null };
+const ui = { executed: [], messages: [], picks: [], inputs: [], activeTab: null, views: {}, commands: {}, status: null, agentCalls: [], agentsOut: '[]' };
 const answer = (kind) => (...a) => {
   ui.messages.push([kind, a[0]]);
   return Promise.resolve(ui[`${kind}Answer`]);
@@ -107,7 +107,18 @@ const vscode = {
   },
 };
 const realLoad = Module._load;
+// `claude agents --json --all` answers with ui.agentsOut instead of running.
+const realCp = require('child_process');
+const cpStub = {
+  ...realCp,
+  execFile: (cmd, args, opts, cb) => {
+    ui.agentCalls.push([cmd, ...args]);
+    setImmediate(() => cb(null, ui.agentsOut, ''));
+    return {};
+  },
+};
 Module._load = function (request, ...rest) {
+  if (request === 'child_process') return cpStub;
   return request === 'vscode' ? vscode : realLoad.call(this, request, ...rest);
 };
 
@@ -289,6 +300,47 @@ test('a refused prompt drops to Idle once its tab has been looked at; the next r
   await sleep(1200);
   assert.strictEqual(ui.messages.length, 0, 'no notification for the tab in front');
   ui.activeTab = null;
+});
+
+test('a status that looks stale is checked with `claude agents`, at most every 20 s, and a newer hook event wins', async () => {
+  const realCfg = vscode.workspace.getConfiguration;
+  vscode.workspace.getConfiguration = () => ({ get: (k) => ({ notify: 'off', showHeadless: false, closedSessionsShown: 12, checkWithClaudeAgents: true })[k] });
+  // updateSession stamps every write with the current time, so the file is aged by hand
+  const age = (id, patch) => {
+    const f = path.join(HOME, 'sessions', `${id}.json`);
+    fs.writeFileSync(f, JSON.stringify({ ...JSON.parse(fs.readFileSync(f, 'utf8')), ...patch }));
+  };
+  const wiki = () => ui.views['switchboard.sessions'].provider.getChildren().flatMap((g) => (g.children || []).map((i) => ({ group: g.label, item: i }))).find((x) => x.item.sessionId === 'wiki');
+  try {
+    ui.activeTab = null;
+    ui.agentCalls.length = 0;
+    ui.agentsOut = JSON.stringify([{ pid: process.pid, cwd: '/work', kind: 'interactive', startedAt: 1, sessionId: 'wiki', name: 'AWS wiki', status: 'waiting', waitingFor: 'permission prompt' }]);
+    // working, and nothing heard for 3 minutes: a dialog the hooks did not report
+    store.upsertSession('wiki', { status: 'working', attention: null, seen: true, bg: 0, bgBefore: 0, watch: false });
+    const old = Date.now() - 3 * 60000;
+    age('wiki', { updatedAt: old, statusSince: old, promptAt: old });
+    await ui.commands['switchboard.refresh']();
+    await sleep(300);
+    assert.deepStrictEqual(ui.agentCalls, [['claude', 'agents', '--json', '--all']]);
+    let x = wiki();
+    assert.strictEqual(x.group, 'Needs you');
+    assert.match(x.item.description, /Waiting for you: permission prompt/);
+    assert.match(x.item.tooltip.value, /Status from `claude agents`/);
+
+    // not asked again within 20 s
+    await ui.commands['switchboard.refresh']();
+    await sleep(100);
+    assert.strictEqual(ui.agentCalls.length, 1);
+
+    // the hooks report again (the dialog was answered): their event is newer than the list
+    store.upsertSession('wiki', { status: 'working' });
+    await ui.commands['switchboard.refresh']();
+    x = wiki();
+    assert.strictEqual(x.group, 'Working');
+    assert.doesNotMatch(x.item.tooltip.value, /claude agents/);
+  } finally {
+    vscode.workspace.getConfiguration = realCfg;
+  }
 });
 
 test('the sidebar reads the store with the installed code and picks up a change without a reload', async () => {

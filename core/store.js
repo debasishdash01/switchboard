@@ -337,6 +337,13 @@ function listSessions(opts = {}) {
     if (s.status === 'closed' && opts.includeClosed === false) continue;
     applyRefusal(s);
     applyInterrupt(s);
+    // The hook writes the record only when the state changes, not at every tool call. Claude writes the
+    // transcript at every reply and tool result, so its time is the latest sign of life (see looksStale).
+    if ((s.status === 'working' || s.status === 'blocked') && s.transcript) {
+      try {
+        s.activeAt = fs.statSync(s.transcript).mtimeMs;
+      } catch {}
+    }
     // The hook stores the title at the session's start, at each prompt and at each Stop. A session it has
     // not heard from since, or one in its first turn, has none yet although its transcript does.
     if (!s.title && s.transcript && s.status !== 'closed') {
@@ -631,6 +638,85 @@ function applyInterrupt(s) {
   s.blocks = {};
   s.attention = null;
   s.statusSince = r.at;
+  return s;
+}
+
+// ───────────────────────── a second opinion from `claude agents` ─────────────────────────
+
+const STALE = { blockedMs: 30 * 1000, workingMs: 2 * 60 * 1000 };
+
+/** The latest sign of life: the hook's last write, or Claude's last write to the transcript (listSessions). */
+const lastSign = (s) => Math.max(s.updatedAt || 0, s.activeAt || 0);
+
+/**
+ * Whether a session's stored state looks stale enough to ask Claude Code's own list of live sessions
+ * (`claude agents --json --all`): blocked for more than 30 s (a permission granted sends no event, open
+ * question 6), or working with no sign of life for more than 2 minutes (a dialog or an end the hooks did
+ * not report, or one long tool call). Returns 'blocked', 'working' or null. Background work is left out:
+ * that list shows a session whose only work is in the background as idle, so it cannot tell us more.
+ */
+function looksStale(s, now = Date.now()) {
+  if (!s || !s.pid || s.refused) return null;
+  if (s.status === 'blocked' && now - (s.statusSince || 0) > STALE.blockedMs) return 'blocked';
+  if (s.status === 'working' && !(s.bg > 0) && now - lastSign(s) > STALE.workingMs) return 'working';
+  return null;
+}
+
+/**
+ * The output of `claude agents --json --all` as { at, rows: Map of sessionId -> { status, waitingFor, pid } }.
+ * Output it does not understand gives null: the command is a research preview and its format can change.
+ */
+function parseAgents(text, at = Date.now()) {
+  let list;
+  try {
+    list = JSON.parse(String(text));
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(list)) return null;
+  const rows = new Map();
+  for (const a of list) {
+    if (!a || typeof a.sessionId !== 'string' || typeof a.status !== 'string') continue;
+    rows.set(a.sessionId, { status: a.status, waitingFor: typeof a.waitingFor === 'string' ? oneLine(a.waitingFor, 80) : '', pid: Number(a.pid) || 0 });
+  }
+  return { at, rows };
+}
+
+/**
+ * Corrects a stale-looking state with what `claude agents` reported (`snap` from parseAgents), in memory
+ * only, like applyRefusal: readers never rewrite a session file. The list must be newer than the session's
+ * last hook event, because an event that came after it is the fresher truth. Only busy, waiting and idle are
+ * understood; anything else, or a session the list does not show, is left alone.
+ */
+function applyAgentView(s, snap, now = Date.now()) {
+  if (!snap || !(snap.rows instanceof Map)) return s;
+  const kind = looksStale(s, now);
+  if (!kind || snap.at <= lastSign(s)) return s;
+  const row = snap.rows.get(s.id);
+  if (!row || (row.pid && row.pid !== s.pid)) return s;
+  const fix = (status, since, attention = null) => {
+    s.status = status;
+    s.statusSince = since || s.statusSince;
+    s.attention = attention;
+    if (status !== 'blocked') s.blocks = {};
+    s.agentView = snap.at;
+    return s;
+  };
+  // The turn is over, and nothing told us. Work from before the last prompt may still run (see applyRefusal).
+  const ended = () => {
+    if (s.bgBefore > 0) {
+      s.bg = s.bgBefore;
+      return fix('working', s.statusSince);
+    }
+    return fix('idle', lastSign(s));
+  };
+  if (kind === 'blocked') {
+    if (row.status === 'busy') return fix('working', s.promptAt); // the dialog was answered
+    if (row.status === 'idle') return ended();
+    return s; // still waiting: the user has not answered yet
+  }
+  if (row.status === 'waiting') return fix('blocked', lastSign(s), `Waiting for you${row.waitingFor ? `: ${row.waitingFor}` : ''}`);
+  if (row.status === 'idle') return ended();
   return s;
 }
 
@@ -987,6 +1073,9 @@ module.exports = {
   recentTurns,
   applyRefusal,
   applyInterrupt,
+  looksStale,
+  parseAgents,
+  applyAgentView,
   transcriptFormats,
   // rooms
   listRooms,

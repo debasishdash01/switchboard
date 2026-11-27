@@ -131,6 +131,16 @@
           "type": "boolean",
           "default": true,
           "description": "Read the store with the code in ~/.switchboard/app (the copy the hooks run from) and pick up changes to it without a window reload. Turn off to use only the copy packaged with this extension."
+        },
+        "switchboard.checkWithClaudeAgents": {
+          "type": "boolean",
+          "default": true,
+          "description": "When a session's status looks stale (Needs you for more than 30 s, or Working with no event for 2 minutes), ask Claude Code's own list of live sessions (`claude agents --json --all`) and show what it says. A local command: no tokens, at most one call every 20 s."
+        },
+        "switchboard.claudePath": {
+          "type": "string",
+          "default": "",
+          "description": "The claude command used for that check. Empty: `claude` on the PATH, then ~/.local/bin."
         }
       }
     }

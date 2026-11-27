@@ -90,7 +90,7 @@ Claude session ──hook──▶ ~/.switchboard/ (plain files) ◀── VS Co
 
 ## Privacy and safety
 
-- No network calls and no telemetry.
+- No network calls and no telemetry. The one outside command the sidebar runs, `claude agents --json --all`, runs with Claude Code's non-essential traffic (update checks, telemetry) turned off.
 - A note is copied into every member session's conversation, and so to Anthropic as part of that conversation, like anything else you type there. Share tax or health details to a named room, not to Everyone.
 - Received notes are marked as reference material, not instructions, and Claude still asks before running tools. That reduces, but does not remove, the risk of one session passing a bad instruction to another. Do not link a session that reads untrusted web content with one that has broad permissions.
 - Files under `~/.switchboard` are readable by anything running as you, the same as Claude's own transcripts.
@@ -103,7 +103,7 @@ Claude session ──hook──▶ ~/.switchboard/ (plain files) ◀── VS Co
 - Links attach to sessions. A brand-new session on the same topic starts unlinked.
 - A prompt that another tool's hook stops is recognised from the notice Claude Code writes to the session's transcript. That format is not a documented interface; if it changes, such a session shows as Working until its next prompt finishes.
 - A turn you interrupt with Esc sends no hook event. Switchboard reads the marker Claude writes to the transcript instead, and shows the session as Idle. That marker is not a documented interface; `doctor` reports whether it is still seen.
-- Claude Code sends no event when you grant a permission. The session stays under Needs you until that batch of tool calls ends.
+- Claude Code sends no event when you grant a permission. After 30 s under Needs you, the sidebar asks Claude Code's own list of live sessions (`claude agents --json --all`, a research preview) and moves the session back to Working if that list says it is busy. The same check runs when a working session's transcript has been silent for 2 minutes, which catches a dialog or an end the hooks did not report. Turn it off with `switchboard.checkWithClaudeAgents`; `doctor` shows whether the command works.
 - A background task that never ends, such as a dev server, keeps its session on Working.
 
 ## Development

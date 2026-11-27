@@ -194,6 +194,20 @@ switch (cmd) {
       // These two appear only after an Esc or a refused prompt, so not seeing them is normal.
       out(`info interrupt markers in ${fmt.interrupt}, refused-prompt notices in ${fmt.refusal} (none is normal if you have not pressed Esc or had a prompt refused lately)`);
     }
+    // The sidebar asks this command when a status looks stale (setting switchboard.checkWithClaudeAgents).
+    const t0 = Date.now();
+    const agentsRun = (cmd) =>
+      require('child_process').spawnSync(cmd, ['agents', '--json', '--all'], {
+        encoding: 'utf8',
+        timeout: 15000,
+        windowsHide: true,
+        env: { ...process.env, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' }, // as the sidebar runs it
+      });
+    let r = agentsRun('claude');
+    if (r.error && r.error.code === 'ENOENT') r = agentsRun(path.join(os.homedir(), '.local', 'bin', process.platform === 'win32' ? 'claude.exe' : 'claude'));
+    const snap = !r.error && r.status === 0 ? store.parseAgents(r.stdout) : null;
+    if (snap) out(`ok   claude agents --json lists ${snap.rows.size} live session(s) (${Date.now() - t0} ms)`);
+    else out(`warn claude agents --json did not work (${r.error ? r.error.code || r.error.message : `exit ${r.status}`}): the sidebar cannot double-check a status that looks stale`);
     break;
   }
   default:

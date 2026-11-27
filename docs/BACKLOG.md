@@ -35,6 +35,7 @@ Other tools looked at: [SessionDeck](https://github.com/len5ky/sessiondeck) (VS 
 - **A2 already there**: each row already ends with how long the session has been in its state, and shows `N background`. Nothing to build.
 - **A4 mostly there, finished**: the notice already said "needs you: Needs your permission: Bash" with an Open button. A question now shows its text: `Asking you: <first question> (1 of 2 questions)`.
 - **A7 done**: right-click a session → "Tell Me When It Finishes / Stop Watching". One notice when it finishes, is interrupted or closes, even with `switchboard.notify` off, and then the watch ends. A dialog on the way does not end it. Rows show `watching`.
+- **B1 done**: the sidebar asks `claude agents --json --all` when a status looks stale and corrects it in memory. One change from the plan: "no event for 2 minutes" became "no hook write and no transcript write for 2 minutes", because the hook writes a record only when the state changes, so a turn longer than 2 minutes would always have looked stale. See CAPABILITY.md, "The second opinion from `claude agents`". Not yet seen in a real window.
 - **A8 done**: `doctor` counts titles, interrupt markers and refused-prompt notices in the 20 newest transcripts, and warns when no titles are found.
 
 ## Build next: small, clear wins

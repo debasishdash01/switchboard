@@ -244,6 +244,7 @@ test('an interrupted turn is idle, not working for good; a dialog dismissed with
   hook('UserPromptSubmit', 'INT', { prompt: 'refactor the parser', transcript_path: f });
   fs.appendFileSync(f, said('user', 'refactor the parser') + said('assistant', [{ type: 'text', text: 'Reading the parser.' }]));
   assert.strictEqual(listed('INT').status, 'working');
+  assert.strictEqual(listed('INT').activeAt, fs.statSync(f).mtimeMs, 'the transcript time is the latest sign of life');
   fs.appendFileSync(f, said('user', [{ type: 'text', text: '[Request interrupted by user]' }]));
   let s = listed('INT');
   assert.strictEqual(s.status, 'idle');
@@ -292,6 +293,71 @@ test('doctor: which transcript lines Switchboard reads were seen in the newest t
   fs.writeFileSync(path.join(dir, 'p1', 'c.txt'), 'not a transcript');
   assert.deepStrictEqual(store.transcriptFormats(dir), { files: 2, title: 1, refusal: 1, interrupt: 1 });
   assert.deepStrictEqual(store.transcriptFormats(path.join(HOME, 'missing')), { files: 0, title: 0, refusal: 0, interrupt: 0 });
+});
+
+test('a second opinion from `claude agents`: only for a status that looks stale, and only when newer than the last event', () => {
+  const now = Date.now();
+  const snapOf = (rows, at = now) => store.parseAgents(JSON.stringify(rows), at);
+  const row = (sessionId, status, extra = {}) => ({ pid: 4242, cwd: 'd:\\w', kind: 'interactive', startedAt: 1, sessionId, name: 'x', status, ...extra });
+  const old = now - 3 * 60000;
+  const rec = (o = {}) => ({ id: 'S', pid: 4242, status: 'working', updatedAt: old, statusSince: old, promptAt: old, blocks: {}, ...o });
+
+  // what looks stale
+  assert.strictEqual(store.looksStale(rec(), now), 'working');
+  assert.strictEqual(store.looksStale(rec({ updatedAt: now - 60000 }), now), null, 'an event a minute ago');
+  assert.strictEqual(store.looksStale(rec({ bg: 1 }), now), null, 'background work: the list shows it as idle anyway');
+  assert.strictEqual(store.looksStale(rec({ status: 'blocked', statusSince: now - 31000 }), now), 'blocked');
+  assert.strictEqual(store.looksStale(rec({ status: 'blocked', statusSince: now - 5000 }), now), null);
+  assert.strictEqual(store.looksStale(rec({ status: 'blocked', refused: true }), now), null);
+  assert.strictEqual(store.looksStale(rec({ status: 'done' }), now), null);
+  assert.strictEqual(store.looksStale(rec({ pid: 0 }), now), null);
+  // the hook writes only when the state changes; Claude writing the transcript 10 s ago is a sign of life
+  assert.strictEqual(store.looksStale(rec({ activeAt: now - 10000 }), now), null);
+
+  // output it does not understand
+  assert.strictEqual(store.parseAgents('not json'), null);
+  assert.strictEqual(store.parseAgents('{"sessions":[]}'), null);
+  assert.strictEqual(snapOf([{ status: 'busy' }, null, row('S', 'idle')]).rows.size, 1);
+
+  // working with no event for 3 minutes: a dialog the hooks did not report
+  let s = store.applyAgentView(rec(), snapOf([row('S', 'waiting', { waitingFor: 'permission prompt' })]), now);
+  assert.strictEqual(s.status, 'blocked');
+  assert.strictEqual(s.attention, 'Waiting for you: permission prompt');
+  assert.strictEqual(store.viewState(s), 'blocked');
+  assert.strictEqual(s.agentView, now);
+  // ... a turn that ended without a word
+  assert.strictEqual(store.applyAgentView(rec(), snapOf([row('S', 'idle')]), now).status, 'idle');
+  // ... unless work from before the last prompt still runs
+  s = store.applyAgentView(rec({ bgBefore: 2 }), snapOf([row('S', 'idle')]), now);
+  assert.strictEqual(s.status, 'working');
+  assert.strictEqual(s.bg, 2);
+  // ... still busy (a long tool call): nothing changes
+  s = store.applyAgentView(rec(), snapOf([row('S', 'busy')]), now);
+  assert.strictEqual(s.status, 'working');
+  assert.strictEqual(s.agentView, undefined);
+
+  // under "Needs you" for a minute while the list says busy: the permission was granted
+  const asked = { status: 'blocked', statusSince: now - 60000, attention: 'Needs your permission: Bash', blocks: { main: { at: now - 60000 } } };
+  s = store.applyAgentView(rec(asked), snapOf([row('S', 'busy')]), now);
+  assert.strictEqual(s.status, 'working');
+  assert.strictEqual(s.attention, null);
+  assert.deepStrictEqual(s.blocks, {});
+  assert.strictEqual(s.statusSince, old, 'working counts from the prompt');
+  // ... still waiting: the user has not answered
+  s = store.applyAgentView(rec(asked), snapOf([row('S', 'waiting')]), now);
+  assert.strictEqual(s.status, 'blocked');
+  assert.strictEqual(s.attention, 'Needs your permission: Bash');
+
+  // left alone: a list older than the last event, a session it does not show, another process with that id,
+  // a status it does not know, a state that is not stale, no list at all
+  assert.strictEqual(store.applyAgentView(rec(), snapOf([row('S', 'idle')], now - 4 * 60000), now).status, 'working');
+  const later = { status: 'blocked', statusSince: now - 60000, activeAt: now - 1000 };
+  assert.strictEqual(store.applyAgentView(rec(later), snapOf([row('S', 'idle')], now - 5000), now).status, 'blocked', 'the transcript changed after the list was taken');
+  assert.strictEqual(store.applyAgentView(rec(), snapOf([row('OTHER', 'idle')]), now).status, 'working');
+  assert.strictEqual(store.applyAgentView(rec(), snapOf([row('S', 'idle', { pid: 999 })]), now).status, 'working');
+  assert.strictEqual(store.applyAgentView(rec(), snapOf([row('S', 'sleeping')]), now).status, 'working');
+  assert.strictEqual(store.applyAgentView(rec({ updatedAt: now - 1000 }), snapOf([row('S', 'idle')]), now).status, 'working');
+  assert.strictEqual(store.applyAgentView(rec(), null, now).status, 'working');
 });
 
 test('refusals: records from before the fix, the plain-text notice, and transcripts that cannot be read', () => {
